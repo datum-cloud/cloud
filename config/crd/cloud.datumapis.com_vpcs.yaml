@@ -1,0 +1,78 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.18.0
+  name: vpcs.cloud.datumapis.com
+spec:
+  group: cloud.datumapis.com
+  names:
+    kind: VPC
+    listKind: VPCList
+    plural: vpcs
+    singular: vpc
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          VPC represents a virtual private cloud — an isolated Layer 2 domain backed
+          by one or more CIDR blocks.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: Desired CIDR address space.
+            properties:
+              networks:
+                description: CIDR blocks that form the VPC address space.
+                items:
+                  description: Network is an IPv4 or IPv6 CIDR block (e.g., "10.0.0.0/24").
+                  maxLength: 64
+                  type: string
+                maxItems: 64
+                minItems: 1
+                type: array
+            required:
+            - networks
+            type: object
+            x-kubernetes-validations:
+            - message: each network must be a valid IPv4 or IPv6 CIDR
+              rule: self.networks.all(n, isCIDR(n))
+          status:
+            description: Controller-observed state.
+            properties:
+              identifier:
+                description: Opaque controller-assigned identifier for this VPC.
+                type: string
+              ready:
+                default: false
+                description: True when the VPC is provisioned and ready for attachments.
+                type: boolean
+            required:
+            - ready
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

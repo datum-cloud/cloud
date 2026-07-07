@@ -1,0 +1,215 @@
+version: '3'
+
+vars:
+  LOCALBIN:
+    sh: echo "$(pwd)/bin"
+  GOBIN:
+    sh: |
+      gobin=$(go env GOBIN)
+      [ -n "$gobin" ] && echo "$gobin" || echo "$(go env GOPATH)/bin"
+  GOLANGCI_LINT: '{{.LOCALBIN}}/golangci-lint'
+  CONTROLLER_GEN: '{{.LOCALBIN}}/controller-gen'
+  CHAINSAW: '{{.LOCALBIN}}/chainsaw'
+  YAMLFMT: '{{.LOCALBIN}}/yamlfmt'
+  CRD_REF_DOCS: '{{.LOCALBIN}}/crd-ref-docs'
+  GOLANGCI_LINT_VERSION: v2.1.6
+  CONTROLLER_GEN_VERSION: v0.18.0
+  CHAINSAW_VERSION: v0.2.15
+  YAMLFMT_VERSION: v0.21.0
+  CRD_REF_DOCS_VERSION: v0.2.0
+
+tasks:
+  default:
+    silent: true
+    cmds:
+      - task --list
+
+  ##
+  ## Development
+  ##
+
+  fmt:
+    desc: Run go fmt against code
+    run: once
+    cmds:
+      - go fmt ./...
+
+  vet:
+    desc: Run go vet against code
+    run: once
+    cmds:
+      - GOOS=linux go vet ./...
+
+  test:
+    desc: Run unit tests then e2e tests
+    cmds:
+      - task: test:unit
+      - task: test:e2e
+
+  test:unit:
+    desc: Run unit tests
+    deps: [fmt, vet]
+    cmds:
+      - GOOS=linux go test $(go list ./... | grep -v /e2e) -coverprofile cover.out
+
+  lint:
+    desc: Run golangci-lint, yamlfmt, and yaml extension check
+    deps: [install:golangci-lint, install:yamlfmt]
+    cmds:
+      - '{{.GOLANGCI_LINT}} run'
+      - '{{.YAMLFMT}} -lint ./...'
+      - |
+        files=$(find . -name "*.yml" \
+          -not -path "./.git/*" \
+          -not -path "./bin/*" \
+          -not -path "./vendor/*")
+        if [ -n "$files" ]; then
+          echo "error: .yml files must use .yaml extension:"
+          echo "$files" | sed 's/^/  /'
+          exit 1
+        fi
+
+  lint-fix:
+    desc: Run golangci-lint and yamlfmt with fixes
+    deps: [install:golangci-lint, install:yamlfmt]
+    cmds:
+      - '{{.GOLANGCI_LINT}} run --fix'
+      - '{{.YAMLFMT}} ./...'
+
+  ##
+  ## Build
+  ##
+
+  build:
+    desc: Build all packages
+    deps: [fmt, vet]
+    cmds:
+      - go build ./...
+
+  ##
+  ## Code generation
+  ##
+
+  generate:
+    desc: Run all code generators in order
+    cmds:
+      - task: generate:methods
+      - task: generate:manifests
+      - task: generate:docs
+
+  generate:methods:
+    desc: Generate deepcopy methods
+    deps: [install:controller-gen]
+    cmds:
+      - '{{.CONTROLLER_GEN}} object:headerFile="hack/boilerplate.go.txt" paths="./..."'
+
+  generate:manifests:
+    desc: Generate CRD manifests
+    deps: [install:controller-gen]
+    cmds:
+      - '{{.CONTROLLER_GEN}} crd paths="./api/..." output:crd:artifacts:config=config/crd'
+
+  generate:docs:
+    desc: Generate API reference documentation
+    deps: [install:crd-ref-docs]
+    cmds:
+      - rm -rf docs/api && mkdir -p docs/api
+      - '{{.CRD_REF_DOCS}} --renderer=markdown --source-path=api/v1alpha1 --output-path=docs/api/vpc.md --config=.crd-ref-docs.yaml'
+
+  ##
+  ## Testing
+  ##
+
+  ci:
+    desc: Run the full CI pipeline locally
+    cmds:
+      - task: build
+      - task: lint
+      - task: test:unit
+      - task: test:e2e
+
+  test:e2e:
+    desc: Run the full E2E suite
+    cmds:
+      - scripts/e2e.sh
+
+  ##
+  ## Cleanup
+  ##
+
+  clean:
+    desc: Remove build artifacts and temporary files
+    cmds:
+      - rm -rf bin/
+      - rm -f cover.out
+
+  ##
+  ## Dependencies
+  ##
+
+  install:
+    desc: Install all development tools
+    deps: [install:golangci-lint, install:controller-gen, install:chainsaw, install:yamlfmt, install:crd-ref-docs]
+
+  install:golangci-lint:
+    desc: Download golangci-lint locally if necessary
+    run: once
+    cmds:
+      - task: install-tool
+        vars:
+          TARGET: '{{.GOLANGCI_LINT}}'
+          PACKAGE: github.com/golangci/golangci-lint/v2/cmd/golangci-lint
+          VERSION: '{{.GOLANGCI_LINT_VERSION}}'
+
+  install:controller-gen:
+    desc: Download controller-gen locally if necessary
+    run: once
+    cmds:
+      - task: install-tool
+        vars:
+          TARGET: '{{.CONTROLLER_GEN}}'
+          PACKAGE: sigs.k8s.io/controller-tools/cmd/controller-gen
+          VERSION: '{{.CONTROLLER_GEN_VERSION}}'
+
+  install:chainsaw:
+    desc: Download chainsaw locally if necessary
+    run: once
+    cmds:
+      - task: install-tool
+        vars:
+          TARGET: '{{.CHAINSAW}}'
+          PACKAGE: github.com/kyverno/chainsaw
+          VERSION: '{{.CHAINSAW_VERSION}}'
+
+  install:yamlfmt:
+    desc: Download yamlfmt locally if necessary
+    run: once
+    cmds:
+      - task: install-tool
+        vars:
+          TARGET: '{{.YAMLFMT}}'
+          PACKAGE: github.com/google/yamlfmt/cmd/yamlfmt
+          VERSION: '{{.YAMLFMT_VERSION}}'
+
+  install:crd-ref-docs:
+    desc: Download crd-ref-docs locally if necessary
+    run: once
+    cmds:
+      - task: install-tool
+        vars:
+          TARGET: '{{.CRD_REF_DOCS}}'
+          PACKAGE: github.com/elastic/crd-ref-docs
+          VERSION: '{{.CRD_REF_DOCS_VERSION}}'
+
+  install-tool:
+    internal: true
+    cmds:
+      - mkdir -p {{.LOCALBIN}}
+      - |
+        if [ ! -f "{{.TARGET}}-{{.VERSION}}" ]; then
+          echo "Downloading {{.PACKAGE}}@{{.VERSION}}"
+          rm -f "{{.TARGET}}" || true
+          GOBIN={{.LOCALBIN}} go install {{.PACKAGE}}@{{.VERSION}}
+          mv "{{.TARGET}}" "{{.TARGET}}-{{.VERSION}}"
+        fi
+        ln -sf "{{.TARGET}}-{{.VERSION}}" "{{.TARGET}}"

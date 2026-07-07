@@ -1,0 +1,25 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: system-readiness
+spec:
+  description: Verify VPC CRDs are established before running functional tests
+  steps:
+    - name: crds-established
+      try:
+        - assert:
+            resource:
+              apiVersion: apiextensions.k8s.io/v1
+              kind: CustomResourceDefinition
+              metadata:
+                name: vpcs.cloud.datumapis.com
+              status:
+                (conditions[?type=='Established'].status | [0]): "True"
+        - assert:
+            resource:
+              apiVersion: apiextensions.k8s.io/v1
+              kind: CustomResourceDefinition
+              metadata:
+                name: vpcattachments.cloud.datumapis.com
+              status:
+                (conditions[?type=='Established'].status | [0]): "True"

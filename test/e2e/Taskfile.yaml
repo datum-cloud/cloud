@@ -1,0 +1,70 @@
+version: '3'
+
+vars:
+  CLUSTER_NAME: vpc-e2e
+  KIND_CONFIG: "{{.TASKFILE_DIR}}/kind-config.yaml"
+  KIND_IMAGE: kindest/node:v1.34.0
+  KUBECONFIG: "{{.TASKFILE_DIR}}/.kubeconfig"
+  REPO_ROOT: "{{.TASKFILE_DIR}}/../.."
+
+tasks:
+  default:
+    desc: Run the full E2E suite (setup, deploy, test, teardown)
+    cmds:
+      - task: cluster-create
+      - task: deploy
+      - task: test
+      - task: cluster-delete
+
+  cluster-create:
+    desc: Create the kind cluster for E2E tests
+    cmds:
+      - kind create cluster
+          --name {{.CLUSTER_NAME}}
+          --config {{.KIND_CONFIG}}
+          --image {{.KIND_IMAGE}}
+          --kubeconfig {{.KUBECONFIG}}
+          --wait 120s
+      # In Docker-outside-of-Docker devcontainers the API server port binding maps
+      # to the host machine, not the devcontainer. Patch the kubeconfig server URL
+      # to use the control-plane container's IP on the kind Docker bridge network.
+      - |
+        CP_IP=$(docker inspect {{.CLUSTER_NAME}}-control-plane \
+          --format '{{`{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}`}}' 2>/dev/null | head -1)
+        if [ -n "$CP_IP" ]; then
+          KUBECONFIG={{.KUBECONFIG}} kubectl config set-cluster kind-{{.CLUSTER_NAME}} \
+            --server=https://${CP_IP}:6443
+        fi
+    status:
+      - kind get clusters | grep -q {{.CLUSTER_NAME}}
+
+  cluster-delete:
+    desc: Delete the E2E kind cluster
+    cmds:
+      - kind delete cluster --name {{.CLUSTER_NAME}}
+      - rm -f {{.KUBECONFIG}}
+
+  deploy:
+    desc: Deploy VPC CRDs
+    cmds:
+      - task: deploy-crds
+
+  deploy-crds:
+    desc: Apply VPC CRDs and wait for Established
+    cmds:
+      - KUBECONFIG={{.KUBECONFIG}} kubectl apply -k {{.REPO_ROOT}}/config/crd
+      - KUBECONFIG={{.KUBECONFIG}} kubectl wait
+          --for=condition=Established
+          crd/vpcs.cloud.datumapis.com
+          crd/vpcattachments.cloud.datumapis.com
+          --timeout=60s
+
+  test:
+    desc: Run the Chainsaw E2E test suite
+    env:
+      KUBECONFIG: "{{.KUBECONFIG}}"
+    cmds:
+      - chainsaw test
+          --test-dir {{.TASKFILE_DIR}}/tests
+          --config {{.TASKFILE_DIR}}/chainsaw-config.yaml
+          --parallel 1

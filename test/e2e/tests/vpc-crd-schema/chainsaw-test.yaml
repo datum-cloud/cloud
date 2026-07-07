@@ -1,0 +1,293 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: vpc-crd-schema
+spec:
+  description: >
+    Verify schema validation, storage, and field defaults for VPC and VPCAttachment CRDs.
+    Tests that valid resources are accepted and stored, invalid resources are rejected by
+    the API server, and server-side defaults are applied correctly. Does not require any
+    controller — CRD schema is enforced by the API server alone.
+  steps:
+    - name: create-valid-vpc
+      try:
+        - apply:
+            resource:
+              apiVersion: cloud.datumapis.com/v1alpha1
+              kind: VPC
+              metadata:
+                name: e2e-valid-vpc
+              spec:
+                networks:
+                  - "10.0.0.0/8"
+                  - "172.16.0.0/12"
+
+    - name: assert-vpc-exists
+      try:
+        - assert:
+            resource:
+              apiVersion: cloud.datumapis.com/v1alpha1
+              kind: VPC
+              metadata:
+                name: e2e-valid-vpc
+              (metadata.name): e2e-valid-vpc
+
+    - name: verify-vpc-networks
+      try:
+        - script:
+            content: |
+              set -e
+              N0=$(kubectl get vpcs.cloud.datumapis.com e2e-valid-vpc -n "$NAMESPACE" \
+                -o jsonpath='{.spec.networks[0]}')
+              N1=$(kubectl get vpcs.cloud.datumapis.com e2e-valid-vpc -n "$NAMESPACE" \
+                -o jsonpath='{.spec.networks[1]}')
+              COUNT=$(kubectl get vpcs.cloud.datumapis.com e2e-valid-vpc -n "$NAMESPACE" \
+                -o jsonpath='{range .spec.networks[*]}{.}{"\n"}{end}' | wc -l | tr -d ' ')
+              if [ "$COUNT" -ne 2 ] || [ "$N0" != "10.0.0.0/8" ] || [ "$N1" != "172.16.0.0/12" ]; then
+                echo "ERROR: unexpected networks: count=$COUNT n0=$N0 n1=$N1"
+                exit 1
+              fi
+              echo "OK: spec.networks = [$N0, $N1]"
+
+    - name: reject-vpc-empty-networks
+      try:
+        - script:
+            content: |
+              set +e
+              OUTPUT=$(kubectl apply -n "$NAMESPACE" -f - 2>&1 <<'EOF'
+              apiVersion: cloud.datumapis.com/v1alpha1
+              kind: VPC
+              metadata:
+                name: e2e-invalid-vpc-empty
+              spec:
+                networks: []
+              EOF
+              )
+              EXIT=$?
+              set -e
+              if [ "$EXIT" -eq 0 ]; then
+                echo "ERROR: expected rejection of empty networks array but resource was accepted"
+                kubectl delete vpcs.cloud.datumapis.com e2e-invalid-vpc-empty -n "$NAMESPACE" 2>/dev/null || true
+                exit 1
+              fi
+              echo "OK: empty networks array correctly rejected"
+              echo "Server response: $OUTPUT"
+
+    - name: reject-vpc-missing-networks
+      try:
+        - script:
+            content: |
+              set +e
+              OUTPUT=$(kubectl apply -n "$NAMESPACE" -f - 2>&1 <<'EOF'
+              apiVersion: cloud.datumapis.com/v1alpha1
+              kind: VPC
+              metadata:
+                name: e2e-invalid-vpc-missing
+              spec: {}
+              EOF
+              )
+              EXIT=$?
+              set -e
+              if [ "$EXIT" -eq 0 ]; then
+                echo "ERROR: expected rejection for missing networks field but resource was accepted"
+                kubectl delete vpcs.cloud.datumapis.com e2e-invalid-vpc-missing -n "$NAMESPACE" 2>/dev/null || true
+                exit 1
+              fi
+              echo "OK: missing networks field correctly rejected"
+              echo "Server response: $OUTPUT"
+
+    - name: vpc-networks-update
+      try:
+        - script:
+            content: |
+              set -e
+              kubectl patch vpcs.cloud.datumapis.com e2e-valid-vpc -n "$NAMESPACE" \
+                --type=merge -p '{"spec":{"networks":["10.0.0.0/8","172.16.0.0/12","192.168.0.0/16"]}}'
+              COUNT=$(kubectl get vpcs.cloud.datumapis.com e2e-valid-vpc -n "$NAMESPACE" \
+                -o jsonpath='{range .spec.networks[*]}{.}{"\n"}{end}' | wc -l | tr -d ' ')
+              if [ "$COUNT" -ne 3 ]; then
+                echo "ERROR: expected 3 networks after update but got $COUNT"
+                exit 1
+              fi
+              echo "OK: VPC networks updated to $COUNT entries"
+              # Restore original state for subsequent steps
+              kubectl patch vpcs.cloud.datumapis.com e2e-valid-vpc -n "$NAMESPACE" \
+                --type=merge -p '{"spec":{"networks":["10.0.0.0/8","172.16.0.0/12"]}}'
+
+    - name: create-valid-vpcattachment
+      try:
+        - apply:
+            resource:
+              apiVersion: cloud.datumapis.com/v1alpha1
+              kind: VPCAttachment
+              metadata:
+                name: e2e-valid-attachment
+              spec:
+                vpc:
+                  name: e2e-valid-vpc
+                interface:
+                  name: eth0
+                  addresses:
+                    - "10.0.1.2/24"
+                    - "fd00::2/64"
+
+    - name: assert-vpcattachment-exists
+      try:
+        - assert:
+            resource:
+              apiVersion: cloud.datumapis.com/v1alpha1
+              kind: VPCAttachment
+              metadata:
+                name: e2e-valid-attachment
+              (metadata.name): e2e-valid-attachment
+
+    - name: verify-vpcattachment-interface
+      try:
+        - script:
+            content: |
+              set -e
+              IFACE=$(kubectl get vpcattachments.cloud.datumapis.com e2e-valid-attachment -n "$NAMESPACE" \
+                -o jsonpath='{.spec.interface.name}')
+              A0=$(kubectl get vpcattachments.cloud.datumapis.com e2e-valid-attachment -n "$NAMESPACE" \
+                -o jsonpath='{.spec.interface.addresses[0]}')
+              A1=$(kubectl get vpcattachments.cloud.datumapis.com e2e-valid-attachment -n "$NAMESPACE" \
+                -o jsonpath='{.spec.interface.addresses[1]}')
+              if [ "$IFACE" != "eth0" ] || [ "$A0" != "10.0.1.2/24" ] || [ "$A1" != "fd00::2/64" ]; then
+                echo "ERROR: unexpected interface: name=$IFACE addr0=$A0 addr1=$A1"
+                exit 1
+              fi
+              echo "OK: interface name=$IFACE addresses=[$A0, $A1]"
+
+    - name: verify-interface-name-default
+      try:
+        - script:
+            content: |
+              set -e
+              kubectl apply -n "$NAMESPACE" -f - <<EOF
+              apiVersion: cloud.datumapis.com/v1alpha1
+              kind: VPCAttachment
+              metadata:
+                name: e2e-default-iface
+              spec:
+                vpc:
+                  name: e2e-valid-vpc
+                interface:
+                  addresses:
+                    - "10.0.2.3/24"
+              EOF
+              NAME=$(kubectl get vpcattachments.cloud.datumapis.com e2e-default-iface -n "$NAMESPACE" \
+                -o jsonpath='{.spec.interface.name}')
+              kubectl delete vpcattachments.cloud.datumapis.com e2e-default-iface -n "$NAMESPACE"
+              if [ "$NAME" != "eth0" ]; then
+                echo "ERROR: expected interface name default 'eth0' but got '$NAME'"
+                exit 1
+              fi
+              echo "OK: interface name defaulted to eth0"
+
+    - name: reject-vpcattachment-empty-addresses
+      try:
+        - script:
+            content: |
+              set +e
+              OUTPUT=$(kubectl apply -n "$NAMESPACE" -f - 2>&1 <<'EOF'
+              apiVersion: cloud.datumapis.com/v1alpha1
+              kind: VPCAttachment
+              metadata:
+                name: e2e-invalid-attachment
+              spec:
+                vpc:
+                  name: e2e-valid-vpc
+                interface:
+                  name: eth0
+                  addresses: []
+              EOF
+              )
+              EXIT=$?
+              set -e
+              if [ "$EXIT" -eq 0 ]; then
+                echo "ERROR: expected rejection of empty addresses array but resource was accepted"
+                kubectl delete vpcattachments.cloud.datumapis.com e2e-invalid-attachment -n "$NAMESPACE" 2>/dev/null || true
+                exit 1
+              fi
+              echo "OK: empty addresses array correctly rejected"
+              echo "Server response: $OUTPUT"
+
+    - name: reject-vpcattachment-missing-vpc
+      try:
+        - script:
+            content: |
+              set +e
+              OUTPUT=$(kubectl apply -n "$NAMESPACE" -f - 2>&1 <<'EOF'
+              apiVersion: cloud.datumapis.com/v1alpha1
+              kind: VPCAttachment
+              metadata:
+                name: e2e-invalid-no-vpc
+              spec:
+                interface:
+                  name: eth0
+                  addresses:
+                    - "10.0.4.1/24"
+              EOF
+              )
+              EXIT=$?
+              set -e
+              if [ "$EXIT" -eq 0 ]; then
+                echo "ERROR: expected rejection of VPCAttachment missing vpc field but resource was accepted"
+                kubectl delete vpcattachments.cloud.datumapis.com e2e-invalid-no-vpc -n "$NAMESPACE" 2>/dev/null || true
+                exit 1
+              fi
+              echo "OK: missing vpc field correctly rejected"
+              echo "Server response: $OUTPUT"
+
+    - name: reject-vpcattachment-missing-interface
+      try:
+        - script:
+            content: |
+              set +e
+              OUTPUT=$(kubectl apply -n "$NAMESPACE" -f - 2>&1 <<'EOF'
+              apiVersion: cloud.datumapis.com/v1alpha1
+              kind: VPCAttachment
+              metadata:
+                name: e2e-invalid-no-iface
+              spec:
+                vpc:
+                  name: e2e-valid-vpc
+              EOF
+              )
+              EXIT=$?
+              set -e
+              if [ "$EXIT" -eq 0 ]; then
+                echo "ERROR: expected rejection of VPCAttachment missing interface field but resource was accepted"
+                kubectl delete vpcattachments.cloud.datumapis.com e2e-invalid-no-iface -n "$NAMESPACE" 2>/dev/null || true
+                exit 1
+              fi
+              echo "OK: missing interface field correctly rejected"
+              echo "Server response: $OUTPUT"
+
+    - name: multiple-vpcattachments-same-vpc
+      try:
+        - script:
+            content: |
+              set -e
+              kubectl apply -n "$NAMESPACE" -f - <<EOF
+              apiVersion: cloud.datumapis.com/v1alpha1
+              kind: VPCAttachment
+              metadata:
+                name: e2e-attachment-second
+              spec:
+                vpc:
+                  name: e2e-valid-vpc
+                interface:
+                  name: eth1
+                  addresses:
+                    - "10.0.5.1/24"
+              EOF
+              COUNT=$(kubectl get vpcattachments.cloud.datumapis.com -n "$NAMESPACE" \
+                -o jsonpath='{range .items[?(@.spec.vpc.name=="e2e-valid-vpc")]}{.metadata.name}{"\n"}{end}' \
+                | grep -c "e2e-" || true)
+              kubectl delete vpcattachments.cloud.datumapis.com e2e-attachment-second -n "$NAMESPACE"
+              if [ "$COUNT" -lt 2 ]; then
+                echo "ERROR: expected at least 2 VPCAttachments referencing e2e-valid-vpc but got $COUNT"
+                exit 1
+              fi
+              echo "OK: $COUNT VPCAttachments accepted for the same VPC"

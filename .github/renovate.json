@@ -1,0 +1,81 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":disableDependencyDashboard",
+    ":semanticCommits"
+  ],
+  "schedule": ["before 6am on Monday"],
+  "timezone": "America/New_York",
+  "labels": ["dependencies"],
+  "minimumReleaseAge": "3 days",
+  "packageRules": [
+    {
+      "description": "Disable Go version upgrades in go.mod (go directive and toolchain directive)",
+      "matchManagers": ["gomod"],
+      "matchDepNames": ["go"],
+      "enabled": false
+    },
+    {
+      "description": "Disable go-version upgrades in GitHub Actions (actions/setup-go)",
+      "matchManagers": ["github-actions"],
+      "matchDepNames": ["go"],
+      "enabled": false
+    },
+    {
+      "description": "Group all Go dependencies (excluding k8s core, which has its own cadence)",
+      "matchManagers": ["gomod"],
+      "excludePackageNames": [
+        "sigs.k8s.io/controller-runtime",
+        "k8s.io/apimachinery"
+      ],
+      "groupName": "Go dependencies",
+      "groupSlug": "go-deps"
+    },
+    {
+      "description": "k8s core — grouped, slower cadence",
+      "matchManagers": ["gomod"],
+      "matchPackageNames": [
+        "sigs.k8s.io/controller-runtime",
+        "k8s.io/apimachinery"
+      ],
+      "groupName": "k8s core libraries",
+      "groupSlug": "k8s-core",
+      "schedule": ["before 6am on the first day of the month"]
+    },
+    {
+      "description": "Group all GitHub Actions version bumps",
+      "matchManagers": ["github-actions"],
+      "groupName": "GitHub Actions",
+      "groupSlug": "gha"
+    },
+    {
+      "description": "Automerge patch/minor for non-k8s Go deps",
+      "matchManagers": ["gomod"],
+      "matchUpdateTypes": ["patch", "minor"],
+      "excludePackageNames": [
+        "sigs.k8s.io/controller-runtime",
+        "k8s.io/apimachinery"
+      ],
+      "automerge": true,
+      "automergeType": "pr",
+      "platformAutomerge": true
+    },
+    {
+      "description": "Never automerge majors",
+      "matchUpdateTypes": ["major"],
+      "automerge": false,
+      "labels": ["dependencies", "major-update"]
+    }
+  ],
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["security"],
+    "schedule": ["at any time"]
+  },
+  "constraints": {
+    "go": "1.26"
+  },
+  "prConcurrentLimit": 5,
+  "prHourlyLimit": 2
+}

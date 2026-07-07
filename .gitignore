@@ -1,0 +1,230 @@
+# ============================================================
+# Go
+# ============================================================
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+cover.out
+coverage.html
+/bin/
+/dist/
+/galactic
+
+# Go workspace
+go.work
+go.work.sum
+
+# Go build cache (local overrides only)
+.cache/
+
+# ko local build output (modern Go/K8s build tool)
+ko-local/
+*.img
+
+# ============================================================
+# Kubernetes / controller-runtime / kubebuilder
+# ============================================================
+testbin/
+/config/manager/kustomization.yaml.tmp
+
+# controller-runtime / kubebuilder standard entries
+.dockerenv
+
+# kubectl credential cache
+*.crcache
+
+# Kustomize build output and overlay directories
+kustomize-output/
+kustomize-overlay/
+
+# Local kubeconfigs and cluster state — never commit credentials
+kubeconfig
+kubeconfig.*
+*.kubeconfig
+.kube/
+
+# kind cluster artifacts
+kind-*.yaml
+kind-config-local.yaml
+
+# Helm temporary artifacts
+*.tgz
+charts/*.tgz
+
+# Kustomize build output
+kustomize-output/
+
+# Skaffold local overrides
+skaffold.local.yaml
+
+# ============================================================
+# AI coding agents
+# ============================================================
+
+# Qwen Code — project memory, conversation history, agent state
+.qwen/
+
+# Codex / OpenAI
+.codex/
+.openai/
+
+# Cursor
+.cursor/
+.cursorignore
+.cursorules
+
+# Aider
+.aider/
+.aider.tags.cache.v*/
+.aider.chat.history.md
+.aider.input.history
+.aiderignore
+.aider.*
+
+# GitHub Copilot
+.github/copilot-settings.json
+.github/copilot-instructions.md
+
+# Codeium / Windsurf
+.windsurf/
+.codeium/
+
+# JetBrains AI / Qodo
+.qodo/
+
+# Continue
+.continue/
+
+# Devin
+.devin/
+
+# Generic agent scratch directories (scoped, not root-level)
+.agent/
+.agents/
+.claude/scratch/
+
+# ============================================================
+# IDEs and editors
+# ============================================================
+
+# JetBrains (GoLand, PyCharm, IntelliJ, …)
+.idea/
+*.iml
+*.iws
+out/
+.idea_modules/
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# direnv
+.direnv/
+
+# Vim / Neovim
+*.swp
+*.swo
+*~
+.netrwhist
+Session.vim
+.nvim/
+
+# Emacs
+\#*\#
+.\#*
+*.elc
+auto-save-list
+tramp
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# ============================================================
+# OS artifacts
+# ============================================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# Linux
+.fuse_hidden*
+.nfs*
+
+# ============================================================
+# Secrets and credentials — never commit these
+# ============================================================
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+secrets/
+.secrets/
+.env
+.env.*
+!.env.example
+!.env.sample
+authorized_keys
+clab-*/authorized_keys
+
+# ============================================================
+# Docker
+# ============================================================
+
+# Local image tarballs (e.g. `docker save image > image.tar`)
+*.tar
+*.oci
+
+# ============================================================
+# Packet captures and debug output
+# ============================================================
+*.pcap
+*.pcapng
+*.capture
+# Ignore project logs but preserve testdata logs for test suites
+*.log
+!testdata/**/*.log
+
+# ============================================================
+# Lab and local dev overrides
+# ============================================================
+# Build artifacts — local build output and CI build directories
+build/
+
+# ============================================================
+# Miscellaneous
+# ============================================================
+
+# Compiled protobuf outputs (if generated locally, not committed)
+# Uncomment if you generate proto outside of the repo:
+# *.pb.go
+
+# Temporary files
+*.tmp
+*.bak
+*.orig
+.tmp/
+tmp/
+
+# Profiling
+*.prof
+*.pprof
+cpu.prof
+mem.prof
+
+# golangci-lint cache
+.golangci-lint-cache/
+
+# Local files
+.local
