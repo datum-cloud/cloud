@@ -48,7 +48,6 @@ kubeconfig.*
 .kube/
 
 # kind cluster artifacts
-kind-*.yaml
 kind-config-local.yaml
 
 # Helm temporary artifacts
