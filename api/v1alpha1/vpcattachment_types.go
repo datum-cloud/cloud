@@ -24,6 +24,8 @@ import (
 const VPCAttachmentAnnotation = "k8s.v1alpha1.cloud.datumapis.com/vpc-attachment"
 
 // VPCAttachmentSpec defines the desired state of VPCAttachment
+//
+// +kubebuilder:validation:XValidation:rule="has(self.vpc) && self.vpc.name != ”",message="vpc reference is required"
 type VPCAttachmentSpec struct {
 	// VPC this attachment belongs to.
 	// +required
@@ -63,14 +65,55 @@ type VPCAttachmentInterface struct {
 
 // VPCAttachmentStatus defines the observed state of VPCAttachment.
 type VPCAttachmentStatus struct {
-	// Indicates whether the VPCAttachment is ready for use
-	// +required
-	// +default:value=false
-	Ready bool `json:"ready,omitempty"`
-
-	// A unique identifier assigned to this VPCAttachment
 	// +optional
-	Identifier string `json:"identifier,omitempty"`
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// +listType=map
+	// +listMapKey=type
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// Base62-encoded VPC identifier.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=16
+	VPC string `json:"vpc"`
+
+	// Base62-encoded VPCAttachment identifier.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=16
+	VPCAttachment string `json:"vpcAttachment"`
+
+	// Kubernetes node name where the attachment lives.
+	// +kubebuilder:validation:MinLength=1
+	Node string `json:"node"`
+
+	// Full container ID (46 hex characters).
+	// +kubebuilder:validation:MinLength=46
+	// +kubebuilder:validation:MaxLength=46
+	ContainerID string `json:"containerID"`
+
+	// Pod name.
+	// +kubebuilder:validation:MinLength=1
+	PodName string `json:"podName"`
+
+	// Host-side veth device name (e.g., "G000000010010H").
+	// +kubebuilder:validation:MinLength=1
+	HostInterface string `json:"hostInterface"`
+
+	// VRF device name (e.g., "G000000010010V").
+	// +kubebuilder:validation:MinLength=1
+	VRFInterface string `json:"vrfInterface"`
+
+	// Guest-side veth device name (e.g., "G000000010010G").
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	GuestInterface string `json:"guestInterface,omitempty"`
+
+	// Allocated /80 subnet in CIDR notation (e.g., "fd00:10:ff01:0:1::/80").
+	// +kubebuilder:validation:MinLength=1
+	//
+	// +kubebuilder:validation:XValidation:rule="isCIDR(self)",message="podSubnet must be a valid IPv6 CIDR"
+	PodSubnet string `json:"podSubnet"`
 }
 
 // +kubebuilder:object:root=true
