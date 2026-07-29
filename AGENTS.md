@@ -70,3 +70,6 @@ See [CONVENTIONS.md](docs/agents/CONVENTIONS.md) for coding standards, naming ru
 ## Docs
 
 - `docs/api/vpc.md` — full VPC CRD field reference
+## GitHub PR / Issue / Comment Conventions
+
+Follow the `datum-platform:pr-conventions` skill for all PRs, issues, and comments — including its concision rules: say it once (don't restate the summary as test-plan checkboxes, or describe the same behaviour in prose and again in a checklist), and cut every word carrying no fact. Compress, never omit — brevity must not drop facts.
