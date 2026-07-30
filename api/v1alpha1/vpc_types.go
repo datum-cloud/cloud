@@ -21,6 +21,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// VPCFinalizer is the finalizer applied to VPCs to ensure graceful cleanup.
+const VPCFinalizer = "cloud.datumapis.com/finalizer"
+
 // Network is an IPv4 or IPv6 CIDR block (e.g., "10.0.0.0/24").
 // +kubebuilder:validation:MaxLength=64
 type Network string
@@ -28,6 +31,7 @@ type Network string
 // VPCSpec defines the desired state of a VPC. It specifies the CIDR address space.
 //
 // +kubebuilder:validation:XValidation:rule="self.networks.all(n, isCIDR(n))",message="each network must be a valid IPv4 or IPv6 CIDR"
+// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec is immutable"
 type VPCSpec struct {
 	// CIDR blocks that form the VPC address space.
 	// +kubebuilder:validation:MinItems=1
@@ -37,19 +41,25 @@ type VPCSpec struct {
 
 // VPCStatus defines the observed state of a VPC, populated by the controller.
 type VPCStatus struct {
-	// True when the VPC is provisioned and ready for attachments.
-	// +required
-	// +default:value=false
-	Ready bool `json:"ready,omitempty"`
-
-	// Opaque controller-assigned identifier for this VPC.
 	// +optional
-	Identifier string `json:"identifier,omitempty"`
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// +listType=map
+	// +listMapKey=type
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// Base62-encoded VPC identifier.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=16
+	VPC string `json:"vpc"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:storageversion
+// +kubebuilder:printcolumn:name="VPC",type="string",JSONPath=".status.vpc",description="Base62 VPC identifier"
+// +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type==\"Ready\")].status",description="Ready status"
 
 // VPC represents a virtual private cloud — an isolated Layer 2 domain backed
 // by one or more CIDR blocks.

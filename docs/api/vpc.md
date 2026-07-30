@@ -132,8 +132,17 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `ready` _boolean_ | Indicates whether the VPCAttachment is ready for use |  |  |
-| `identifier` _string_ | A unique identifier assigned to this VPCAttachment |  |  |
+| `observedGeneration` _integer_ |  |  |  |
+| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v/#condition-v1-meta) array_ |  |  |  |
+| `vpc` _string_ | Base62-encoded VPC identifier. |  | MaxLength: 16 <br />MinLength: 1 <br /> |
+| `vpcAttachment` _string_ | Base62-encoded VPCAttachment identifier. |  | MaxLength: 16 <br />MinLength: 1 <br /> |
+| `node` _string_ | Kubernetes node name where the attachment lives. |  | MinLength: 1 <br /> |
+| `containerID` _string_ | Full container ID (46 hex characters). |  | MaxLength: 46 <br />MinLength: 46 <br /> |
+| `podName` _string_ | Pod name. |  | MinLength: 1 <br /> |
+| `hostInterface` _string_ | Host-side veth device name (e.g., "G000000010010H"). |  | MinLength: 1 <br /> |
+| `vrfInterface` _string_ | VRF device name (e.g., "G000000010010V"). |  | MinLength: 1 <br /> |
+| `guestInterface` _string_ | Guest-side veth device name (e.g., "G000000010010G"). |  | MinLength: 1 <br /> |
+| `podSubnet` _string_ | Allocated /80 subnet in CIDR notation (e.g., "fd00:10:ff01:0:1::/80"). |  | MinLength: 1 <br /> |
 
 
 #### VPCRef
@@ -181,7 +190,8 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `ready` _boolean_ | True when the VPC is provisioned and ready for attachments. |  |  |
-| `identifier` _string_ | Opaque controller-assigned identifier for this VPC. |  |  |
+| `observedGeneration` _integer_ |  |  |  |
+| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v/#condition-v1-meta) array_ |  |  |  |
+| `vpc` _string_ | Base62-encoded VPC identifier. |  | MaxLength: 16 <br />MinLength: 1 <br /> |
 
 
