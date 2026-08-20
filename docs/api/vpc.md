@@ -57,7 +57,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `name` _string_ | Name of the NetworkInterface. |  | MinLength: 1 <br /> |
-| `uid` _string_ | UID disambiguates the reference across recreation of the same name. |  | MaxLength: 64 <br />MinLength: 1 <br /> |
+| `uid` _string_ | UID of the NetworkInterface. When set, a controller that finds a different<br />UID must treat the attachment as stale rather than bind to the new interface. |  | MaxLength: 64 <br />MinLength: 1 <br /> |
 
 
 #### VPC
@@ -117,27 +117,28 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `name` _string_ | Name of the interface (e.g., eth0). |  |  |
-| `type` _[VPCAttachmentInterfaceType](#vpcattachmentinterfacetype)_ | Type of interface to create, which selects the CNI master plugin. | veth | Enum: [veth tap] <br /> |
+| `mode` _[VPCAttachmentInterfaceMode](#vpcattachmentinterfacemode)_ | Mode is how the workload consumes the interface. | Netns | Enum: [Netns Hypervisor] <br /> |
 | `addresses` _[IPAddress](#ipaddress) array_ | A list of IPv4 or IPv6 addresses associated with the interface. Empty when<br />the guest manages its own addressing. |  | MaxItems: 16 <br />MaxLength: 64 <br /> |
 
 
-#### VPCAttachmentInterfaceType
+#### VPCAttachmentInterfaceMode
 
 _Underlying type:_ _string_
 
-VPCAttachmentInterfaceType selects the CNI master plugin that realizes the
-interface.
+VPCAttachmentInterfaceMode is how the workload consumes the interface. It
+describes the guest, not the data plane, so a change of implementation on the
+data plane side does not move this API.
 
 _Validation:_
-- Enum: [veth tap]
+- Enum: [Netns Hypervisor]
 
 _Appears in:_
 - [VPCAttachmentInterface](#vpcattachmentinterface)
 
 | Field | Description |
 | --- | --- |
-| `veth` | VPCAttachmentInterfaceTypeVeth attaches a container through galactic-veth.<br /> |
-| `tap` | VPCAttachmentInterfaceTypeTap attaches a virtual machine guest through galactic-tap.<br /> |
+| `Netns` | VPCAttachmentInterfaceModeNetns moves the interface into the workload's<br />network namespace, which is what a container consumes.<br /> |
+| `Hypervisor` | VPCAttachmentInterfaceModeHypervisor hands the interface to a hypervisor as<br />a device, which is what a virtual machine guest consumes.<br /> |
 
 
 #### VPCAttachmentSpec

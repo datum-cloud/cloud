@@ -62,7 +62,8 @@ type NetworkInterfaceRef struct {
 	// +required
 	Name string `json:"name"`
 
-	// UID disambiguates the reference across recreation of the same name.
+	// UID of the NetworkInterface. When set, a controller that finds a different
+	// UID must treat the attachment as stale rather than bind to the new interface.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=64
 	// +optional
@@ -73,17 +74,20 @@ type NetworkInterfaceRef struct {
 // +kubebuilder:validation:MaxLength=64
 type IPAddress string
 
-// VPCAttachmentInterfaceType selects the CNI master plugin that realizes the
-// interface.
-// +kubebuilder:validation:Enum=veth;tap
-type VPCAttachmentInterfaceType string
+// VPCAttachmentInterfaceMode is how the workload consumes the interface. It
+// describes the guest, not the data plane, so a change of implementation on the
+// data plane side does not move this API.
+// +kubebuilder:validation:Enum=Netns;Hypervisor
+type VPCAttachmentInterfaceMode string
 
 const (
-	// VPCAttachmentInterfaceTypeVeth attaches a container through galactic-veth.
-	VPCAttachmentInterfaceTypeVeth VPCAttachmentInterfaceType = "veth"
+	// VPCAttachmentInterfaceModeNetns moves the interface into the workload's
+	// network namespace, which is what a container consumes.
+	VPCAttachmentInterfaceModeNetns VPCAttachmentInterfaceMode = "Netns"
 
-	// VPCAttachmentInterfaceTypeTap attaches a virtual machine guest through galactic-tap.
-	VPCAttachmentInterfaceTypeTap VPCAttachmentInterfaceType = "tap"
+	// VPCAttachmentInterfaceModeHypervisor hands the interface to a hypervisor as
+	// a device, which is what a virtual machine guest consumes.
+	VPCAttachmentInterfaceModeHypervisor VPCAttachmentInterfaceMode = "Hypervisor"
 )
 
 // VPCAttachmentInterface defines the network interface details.
@@ -95,10 +99,10 @@ type VPCAttachmentInterface struct {
 	// +default:value="eth0"
 	Name string `json:"name"`
 
-	// Type of interface to create, which selects the CNI master plugin.
-	// +kubebuilder:default=veth
+	// Mode is how the workload consumes the interface.
+	// +kubebuilder:default=Netns
 	// +optional
-	Type VPCAttachmentInterfaceType `json:"type,omitempty"`
+	Mode VPCAttachmentInterfaceMode `json:"mode,omitempty"`
 
 	// A list of IPv4 or IPv6 addresses associated with the interface. Empty when
 	// the guest manages its own addressing.

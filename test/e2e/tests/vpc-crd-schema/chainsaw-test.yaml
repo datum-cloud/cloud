@@ -207,16 +207,16 @@ spec:
                 echo "Server response: $OUTPUT"
                 exit 1
               fi
-              TYPE=$(kubectl get vpcattachments.cloud.datumapis.com e2e-no-addressing-attachment \
-                -n "$NAMESPACE" -o jsonpath='{.spec.interface.type}')
-              if [ "$TYPE" != "veth" ]; then
-                echo "ERROR: expected interface type default 'veth' but got '$TYPE'"
+              MODE=$(kubectl get vpcattachments.cloud.datumapis.com e2e-no-addressing-attachment \
+                -n "$NAMESPACE" -o jsonpath='{.spec.interface.mode}')
+              if [ "$MODE" != "Netns" ]; then
+                echo "ERROR: expected interface mode default 'Netns' but got '$MODE'"
                 exit 1
               fi
               kubectl delete vpcattachments.cloud.datumapis.com e2e-no-addressing-attachment -n "$NAMESPACE"
-              echo "OK: empty addresses accepted, interface type defaulted to veth"
+              echo "OK: empty addresses accepted, interface mode defaulted to Netns"
 
-    - name: reject-vpcattachment-invalid-interface-type
+    - name: reject-vpcattachment-invalid-interface-mode
       try:
         - script:
             content: |
@@ -231,17 +231,17 @@ spec:
                   name: e2e-valid-vpc
                 interface:
                   name: eth0
-                  type: macvlan
+                  mode: tap
               EOF
               )
               EXIT=$?
               set -e
               if [ "$EXIT" -eq 0 ]; then
-                echo "ERROR: expected rejection of unsupported interface type but resource was accepted"
+                echo "ERROR: expected rejection of unsupported interface mode but resource was accepted"
                 kubectl delete vpcattachments.cloud.datumapis.com e2e-invalid-attachment -n "$NAMESPACE" 2>/dev/null || true
                 exit 1
               fi
-              echo "OK: unsupported interface type correctly rejected"
+              echo "OK: unsupported interface mode correctly rejected"
               echo "Server response: $OUTPUT"
 
     - name: reject-vpcattachment-missing-vpc

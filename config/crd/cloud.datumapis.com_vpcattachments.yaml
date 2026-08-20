@@ -53,17 +53,16 @@ spec:
                       type: string
                     maxItems: 16
                     type: array
+                  mode:
+                    default: Netns
+                    description: Mode is how the workload consumes the interface.
+                    enum:
+                    - Netns
+                    - Hypervisor
+                    type: string
                   name:
                     default: eth0
                     description: Name of the interface (e.g., eth0).
-                    type: string
-                  type:
-                    default: veth
-                    description: Type of interface to create, which selects the CNI
-                      master plugin.
-                    enum:
-                    - veth
-                    - tap
                     type: string
                 required:
                 - name
@@ -79,8 +78,9 @@ spec:
                     minLength: 1
                     type: string
                   uid:
-                    description: UID disambiguates the reference across recreation
-                      of the same name.
+                    description: |-
+                      UID of the NetworkInterface. When set, a controller that finds a different
+                      UID must treat the attachment as stale rather than bind to the new interface.
                     maxLength: 64
                     minLength: 1
                     type: string
