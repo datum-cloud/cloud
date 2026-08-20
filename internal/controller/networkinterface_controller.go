@@ -21,12 +21,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"time"
 
 	nadv1 "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -51,6 +53,10 @@ const (
 	// MultusNetworksAnnotation is the annotation Multus resolves at sandbox
 	// creation to attach a workload to a NAD.
 	MultusNetworksAnnotation = "k8s.v1.cni.cncf.io/networks"
+
+	// ReasonConsumerAnnotationsUnsupported reports that the API server discarded
+	// the consumer annotations, so no workload can be attached.
+	ReasonConsumerAnnotationsUnsupported = "ConsumerAnnotationsUnsupported"
 )
 
 // maxIdentifierAttempts bounds the retry loop that draws an unused identifier.
@@ -121,10 +127,17 @@ func (r *NetworkInterfaceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := r.publishAttachmentStatus(ctx, attachment, &vpc, nad); err != nil {
+	annotationsSupported, err := r.publishToInterface(ctx, &networkInterface, attachment, &vpc, nad)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, r.publishToInterface(ctx, &networkInterface, attachment, &vpc, nad)
+	if !annotationsSupported {
+		ctrl.LoggerFrom(ctx).Info("network interface status.consumerAnnotations was not persisted",
+			"field", "status.consumerAnnotations",
+			"reason", ReasonConsumerAnnotationsUnsupported,
+			"dependency", "network-services-operator must ship NetworkInterface.status.consumerAnnotations")
+	}
+	return ctrl.Result{}, r.publishAttachmentStatus(ctx, attachment, &vpc, nad, annotationsSupported)
 }
 
 // claimFulfilled reports whether an interface is bound to a claim and holds
@@ -267,22 +280,44 @@ func (r *NetworkInterfaceReconciler) publishAttachmentStatus(
 	attachment *cloudv1alpha1.VPCAttachment,
 	vpc *cloudv1alpha1.VPC,
 	nad *nadv1.NetworkAttachmentDefinition,
+	annotationsSupported bool,
 ) error {
 	attachment.Status.VPC = vpc.Status.VPC
 	attachment.Status.VPCAttachment = nad.Labels[LabelVPCAttachment]
 	attachment.Status.NetworkAttachmentDefinition = nad.Name
 	attachment.Status.ObservedGeneration = attachment.Generation
-	meta.SetStatusCondition(&attachment.Status.Conditions, metav1.Condition{
-		Type:               cloudv1alpha1.ConditionTypeReady,
-		Status:             metav1.ConditionTrue,
-		Reason:             "AttachmentDefinitionReady",
-		Message:            fmt.Sprintf("NetworkAttachmentDefinition %s is ready for use", nad.Name),
-		ObservedGeneration: attachment.Generation,
-	})
+	meta.SetStatusCondition(&attachment.Status.Conditions,
+		attachmentReadyCondition(nad, attachment.Generation, annotationsSupported))
 	if err := r.Status().Update(ctx, attachment); err != nil {
 		return fmt.Errorf("update VPC attachment %s status: %w", client.ObjectKeyFromObject(attachment), err)
 	}
 	return nil
+}
+
+// attachmentReadyCondition reports the attachment unready when the consumer
+// annotations did not persist: the data plane is programmed but no workload can
+// be delivered onto it, and a caller polling for the annotations would otherwise
+// wait forever with nothing to read.
+func attachmentReadyCondition(
+	nad *nadv1.NetworkAttachmentDefinition, generation int64, annotationsSupported bool,
+) metav1.Condition {
+	if !annotationsSupported {
+		return metav1.Condition{
+			Type:   cloudv1alpha1.ConditionTypeReady,
+			Status: metav1.ConditionFalse,
+			Reason: ReasonConsumerAnnotationsUnsupported,
+			Message: "NetworkInterface.status.consumerAnnotations was pruned by the API server; " +
+				"network-services-operator must ship the field before a workload can be attached",
+			ObservedGeneration: generation,
+		}
+	}
+	return metav1.Condition{
+		Type:               cloudv1alpha1.ConditionTypeReady,
+		Status:             metav1.ConditionTrue,
+		Reason:             "AttachmentDefinitionReady",
+		Message:            fmt.Sprintf("NetworkAttachmentDefinition %s is ready for use", nad.Name),
+		ObservedGeneration: generation,
+	}
 }
 
 // publishToInterface hands the consumer everything it needs: what realizes the
@@ -294,7 +329,7 @@ func (r *NetworkInterfaceReconciler) publishToInterface(
 	attachment *cloudv1alpha1.VPCAttachment,
 	vpc *cloudv1alpha1.VPC,
 	nad *nadv1.NetworkAttachmentDefinition,
-) error {
+) (bool, error) {
 	ref := &networkingv1alpha.NetworkInterfaceAttachmentRef{
 		APIGroup: cloudv1alpha1.GroupVersion.Group,
 		Kind:     "VPCAttachment",
@@ -305,7 +340,7 @@ func (r *NetworkInterfaceReconciler) publishToInterface(
 		networkInterface.Status.AttachmentRef = ref
 		networkInterface.Status.VPC = vpc.Status.VPC
 		if err := r.Status().Update(ctx, networkInterface); err != nil {
-			return fmt.Errorf("publish attachment onto network interface %s: %w",
+			return false, fmt.Errorf("publish attachment onto network interface %s: %w",
 				client.ObjectKeyFromObject(networkInterface), err)
 		}
 	}
@@ -323,19 +358,33 @@ func consumerAnnotations(nad *nadv1.NetworkAttachmentDefinition) map[string]stri
 
 // publishConsumerAnnotations writes status.consumerAnnotations as a raw merge
 // patch, because the field is landing in network-services-operator in parallel
-// and this repo cannot type against it yet.
+// and this repo cannot type against it yet. It reports whether the write
+// survived: an API server that does not know the field prunes it and answers
+// success.
 func (r *NetworkInterfaceReconciler) publishConsumerAnnotations(
 	ctx context.Context, networkInterface *networkingv1alpha.NetworkInterface, annotations map[string]string,
-) error {
+) (bool, error) {
 	patch, err := json.Marshal(map[string]any{"status": map[string]any{"consumerAnnotations": annotations}})
 	if err != nil {
-		return fmt.Errorf("marshal consumer annotations patch: %w", err)
+		return false, fmt.Errorf("marshal consumer annotations patch: %w", err)
 	}
 	if err := r.Status().Patch(ctx, networkInterface, client.RawPatch(types.MergePatchType, patch)); err != nil {
-		return fmt.Errorf("publish consumer annotations onto network interface %s: %w",
+		return false, fmt.Errorf("publish consumer annotations onto network interface %s: %w",
 			client.ObjectKeyFromObject(networkInterface), err)
 	}
-	return nil
+
+	observed := &unstructured.Unstructured{}
+	observed.SetGroupVersionKind(networkingv1alpha.GroupVersion.WithKind("NetworkInterface"))
+	if err := r.APIReader.Get(ctx, client.ObjectKeyFromObject(networkInterface), observed); err != nil {
+		return false, fmt.Errorf("read back network interface %s: %w",
+			client.ObjectKeyFromObject(networkInterface), err)
+	}
+	persisted, _, err := unstructured.NestedStringMap(observed.Object, "status", "consumerAnnotations")
+	if err != nil {
+		return false, fmt.Errorf("read status.consumerAnnotations on network interface %s: %w",
+			client.ObjectKeyFromObject(networkInterface), err)
+	}
+	return maps.Equal(persisted, annotations), nil
 }
 
 // SetupWithManager registers the reconciler with the manager.
