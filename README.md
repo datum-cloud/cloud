@@ -1,6 +1,6 @@
 # Services
 
-Kubernetes CRDs for virtual networking — API-only, no controller.
+Kubernetes CRDs for virtual networking, and the controller that reconciles them in a POP cell.
 
 **API group:** `cloud.datumapis.com/v1alpha1`
 **Stability:** Alpha
@@ -10,7 +10,9 @@ Kubernetes CRDs for virtual networking — API-only, no controller.
 
 ## What it is
 
-Services defines Kubernetes Custom Resource Definitions for virtual tenant networking. It ships type definitions, validation rules, and CRD manifests — no controller, no runtime, no binaries. External implementations import this module to register these types and reconcile the resources.
+Services defines Kubernetes Custom Resource Definitions for virtual tenant networking, plus `vpc-controller`, which realizes them against the galactic data plane.
+
+The controller runs in a POP cell beside network-services-operator, compute and the workload providers. It turns a `NetworkContext` into a `VPC` identity, allocates an attachment identifier and renders a `NetworkAttachmentDefinition` per `NetworkInterface`, and projects what the data plane published back onto `VPCAttachment` and `NetworkInterface` status.
 
 ## Resources
 
@@ -50,7 +52,8 @@ spec:
 ## Quick start
 
 ```bash
-kubectl apply -k config/crd
+kubectl apply -k config/crd      # types only
+kubectl apply -k config/default  # types, RBAC and the controller
 ```
 
 ## Development

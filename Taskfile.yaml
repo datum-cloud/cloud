@@ -50,7 +50,7 @@ tasks:
     desc: Run unit tests
     deps: [fmt, vet]
     cmds:
-      - GOOS=linux go test $(go list ./... | grep -v /e2e) -coverprofile cover.out
+      - go test $(go list ./... | grep -v /e2e) -coverprofile cover.out
 
   lint:
     desc: Run golangci-lint, yamlfmt, and yaml extension check
@@ -95,6 +95,7 @@ tasks:
     cmds:
       - task: generate:methods
       - task: generate:manifests
+      - task: generate:rbac
       - task: generate:docs
 
   generate:methods:
@@ -108,6 +109,12 @@ tasks:
     deps: [install:controller-gen]
     cmds:
       - '{{.CONTROLLER_GEN}} crd paths="./api/..." output:crd:artifacts:config=config/crd'
+
+  generate:rbac:
+    desc: Generate RBAC manifests from controller markers
+    deps: [install:controller-gen]
+    cmds:
+      - '{{.CONTROLLER_GEN}} rbac:roleName=vpc-controller paths="./internal/..." output:rbac:artifacts:config=config/rbac'
 
   generate:docs:
     desc: Generate API reference documentation
