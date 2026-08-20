@@ -42,6 +42,24 @@ _Appears in:_
 
 
 
+#### NetworkInterfaceRef
+
+
+
+NetworkInterfaceRef references a networking.datumapis.com NetworkInterface in
+the same namespace.
+
+
+
+_Appears in:_
+- [VPCAttachmentSpec](#vpcattachmentspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name of the NetworkInterface. |  | MinLength: 1 <br /> |
+| `uid` _string_ | UID disambiguates the reference across recreation of the same name. |  | MaxLength: 64 <br />MinLength: 1 <br /> |
+
+
 #### VPC
 
 
@@ -99,7 +117,27 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `name` _string_ | Name of the interface (e.g., eth0). |  |  |
-| `addresses` _[IPAddress](#ipaddress) array_ | A list of IPv4 or IPv6 addresses associated with the interface. |  | MaxItems: 16 <br />MaxLength: 64 <br />MinItems: 1 <br /> |
+| `type` _[VPCAttachmentInterfaceType](#vpcattachmentinterfacetype)_ | Type of interface to create, which selects the CNI master plugin. | veth | Enum: [veth tap] <br /> |
+| `addresses` _[IPAddress](#ipaddress) array_ | A list of IPv4 or IPv6 addresses associated with the interface. Empty when<br />the guest manages its own addressing. |  | MaxItems: 16 <br />MaxLength: 64 <br /> |
+
+
+#### VPCAttachmentInterfaceType
+
+_Underlying type:_ _string_
+
+VPCAttachmentInterfaceType selects the CNI master plugin that realizes the
+interface.
+
+_Validation:_
+- Enum: [veth tap]
+
+_Appears in:_
+- [VPCAttachmentInterface](#vpcattachmentinterface)
+
+| Field | Description |
+| --- | --- |
+| `veth` | VPCAttachmentInterfaceTypeVeth attaches a container through galactic-veth.<br /> |
+| `tap` | VPCAttachmentInterfaceTypeTap attaches a virtual machine guest through galactic-tap.<br /> |
 
 
 #### VPCAttachmentSpec
@@ -116,6 +154,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `vpc` _[VPCRef](#vpcref)_ | VPC this attachment belongs to. |  |  |
+| `interfaceRef` _[NetworkInterfaceRef](#networkinterfaceref)_ | NetworkInterface this attachment realizes. |  |  |
 | `interface` _[VPCAttachmentInterface](#vpcattachmentinterface)_ | Interface defines the network interface configuration. |  |  |
 
 
@@ -124,6 +163,9 @@ _Appears in:_
 
 
 VPCAttachmentStatus defines the observed state of VPCAttachment.
+
+Every field but Conditions is optional: an identifier is recorded before a pod
+attaches, and a guest managing its own addressing never reports a subnet.
 
 
 
@@ -139,10 +181,11 @@ _Appears in:_
 | `node` _string_ | Kubernetes node name where the attachment lives. |  | MinLength: 1 <br /> |
 | `containerID` _string_ | Full container ID (46 hex characters). |  | MaxLength: 46 <br />MinLength: 46 <br /> |
 | `podName` _string_ | Pod name. |  | MinLength: 1 <br /> |
-| `hostInterface` _string_ | Host-side veth device name (e.g., "G000000010010H"). |  | MinLength: 1 <br /> |
-| `vrfInterface` _string_ | VRF device name (e.g., "G000000010010V"). |  | MinLength: 1 <br /> |
-| `guestInterface` _string_ | Guest-side veth device name (e.g., "G000000010010G"). |  | MinLength: 1 <br /> |
-| `podSubnet` _string_ | Allocated /80 subnet in CIDR notation (e.g., "fd00:10:ff01:0:1::/80"). |  | MinLength: 1 <br /> |
+| `hostInterface` _string_ | Host-side veth or tap device name (e.g., "G000000010013H"). |  | MinLength: 1 <br /> |
+| `vrfInterface` _string_ | VRF device name, which is per-VPC (e.g., "G000000010V"). |  | MinLength: 1 <br /> |
+| `guestInterface` _string_ | Guest-side veth device name (e.g., "G000000010013G"). |  | MinLength: 1 <br /> |
+| `podSubnet` _string_ | Allocated subnet in CIDR notation (e.g., "fd00:10:ff01:0:1::/80"). |  | MinLength: 1 <br /> |
+| `networkAttachmentDefinition` _string_ | NetworkAttachmentDefinition rendered for this attachment. |  | MinLength: 1 <br /> |
 
 
 #### VPCRef
