@@ -15,7 +15,10 @@ rules:
   - cloud.datumapis.com
   resources:
   - vpcattachments
+  - vpcs
   verbs:
+  - create
+  - delete
   - get
   - list
   - patch
@@ -30,18 +33,6 @@ rules:
   - get
   - patch
   - update
-- apiGroups:
-  - cloud.datumapis.com
-  resources:
-  - vpcs
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
 - apiGroups:
   - coordination.k8s.io
   resources:

@@ -30,6 +30,8 @@ spec:
           image: ghcr.io/datum-cloud/vpc-controller:latest
           args:
             - --leader-elect
+            # Required. Hypervisor for microVM cells, Netns for container cells.
+            - --attachment-mode=Hypervisor
             - --health-probe-bind-address=:8081
             - --metrics-bind-address=:8080
           ports:

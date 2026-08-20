@@ -20,7 +20,9 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 package main
 
 import (
+	"errors"
 	"flag"
+	"fmt"
 	"os"
 
 	nadv1 "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
@@ -51,12 +53,14 @@ func init() {
 }
 
 func main() {
-	var metricsAddr, probeAddr string
+	var metricsAddr, probeAddr, rawAttachmentMode string
 	var enableLeaderElection bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "Address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "Address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", true,
 		"Enable leader election. A single writer is what makes identifier allocation safe.")
+	flag.StringVar(&rawAttachmentMode, "attachment-mode", "",
+		"Required. How guests in this cell consume an interface: Netns or Hypervisor.")
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -64,6 +68,12 @@ func main() {
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 	setupLog := ctrl.Log.WithName("setup")
 	ctx := ctrl.SetupSignalHandler()
+
+	attachmentMode, err := parseAttachmentMode(rawAttachmentMode)
+	if err != nil {
+		setupLog.Error(err, "invalid configuration")
+		os.Exit(1)
+	}
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
@@ -88,17 +98,6 @@ func main() {
 		setupLog.Error(err, "unable to index VPC attachments by identity")
 		os.Exit(1)
 	}
-	if err := mgr.GetFieldIndexer().IndexField(ctx, &cloudv1alpha1.VPCAttachment{},
-		controller.IndexVPCAttachmentInterface, func(obj client.Object) []string {
-			attachment, ok := obj.(*cloudv1alpha1.VPCAttachment)
-			if !ok || attachment.Spec.InterfaceRef == nil {
-				return nil
-			}
-			return []string{attachment.Spec.InterfaceRef.Name}
-		}); err != nil {
-		setupLog.Error(err, "unable to index VPC attachments by interface")
-		os.Exit(1)
-	}
 
 	if err := (&controller.NetworkContextReconciler{
 		Client: mgr.GetClient(), Scheme: mgr.GetScheme(),
@@ -106,10 +105,11 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "NetworkContext")
 		os.Exit(1)
 	}
-	if err := (&controller.VPCAttachmentReconciler{
+	if err := (&controller.NetworkInterfaceReconciler{
 		Client: mgr.GetClient(), Scheme: mgr.GetScheme(), APIReader: mgr.GetAPIReader(),
+		AttachmentMode: attachmentMode,
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "VPCAttachment")
+		setupLog.Error(err, "unable to create controller", "controller", "NetworkInterface")
 		os.Exit(1)
 	}
 	if err := (&controller.BGPAdvertisementReconciler{
@@ -132,5 +132,20 @@ func main() {
 	if err := mgr.Start(ctx); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
+	}
+}
+
+// parseAttachmentMode resolves the required attachment mode. There is no
+// default: defaulting to Netns would hand a microVM a veth it cannot use.
+func parseAttachmentMode(value string) (cloudv1alpha1.VPCAttachmentInterfaceMode, error) {
+	switch cloudv1alpha1.VPCAttachmentInterfaceMode(value) {
+	case cloudv1alpha1.VPCAttachmentInterfaceModeNetns:
+		return cloudv1alpha1.VPCAttachmentInterfaceModeNetns, nil
+	case cloudv1alpha1.VPCAttachmentInterfaceModeHypervisor:
+		return cloudv1alpha1.VPCAttachmentInterfaceModeHypervisor, nil
+	case "":
+		return "", errors.New("--attachment-mode is required: set Netns for container cells or Hypervisor for microVM cells")
+	default:
+		return "", fmt.Errorf("--attachment-mode %q is not one of Netns, Hypervisor", value)
 	}
 }

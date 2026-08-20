@@ -15,27 +15,33 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-package controller
+package main
 
 import (
 	"testing"
 
 	cloudv1alpha1 "go.datum.net/cloud/api/v1alpha1"
-	"go.datum.net/cloud/internal/galactic"
 )
 
-func TestMasterPlugin(t *testing.T) {
+func TestParseAttachmentMode(t *testing.T) {
 	tests := []struct {
-		mode cloudv1alpha1.VPCAttachmentInterfaceMode
-		want string
+		input   string
+		want    cloudv1alpha1.VPCAttachmentInterfaceMode
+		wantErr bool
 	}{
-		{cloudv1alpha1.VPCAttachmentInterfaceModeNetns, galactic.PluginVeth},
-		{cloudv1alpha1.VPCAttachmentInterfaceModeHypervisor, galactic.PluginTap},
-		{"", galactic.PluginVeth},
+		{"Hypervisor", cloudv1alpha1.VPCAttachmentInterfaceModeHypervisor, false},
+		{"Netns", cloudv1alpha1.VPCAttachmentInterfaceModeNetns, false},
+		{"", "", true},
+		{"netns", "", true},
+		{"tap", "", true},
 	}
 	for _, test := range tests {
-		t.Run(string(test.mode), func(t *testing.T) {
-			if got := masterPlugin(test.mode); got != test.want {
+		t.Run(test.input, func(t *testing.T) {
+			got, err := parseAttachmentMode(test.input)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("error: got %v, wantErr %v", err, test.wantErr)
+			}
+			if got != test.want {
 				t.Errorf("got %q, want %q", got, test.want)
 			}
 		})

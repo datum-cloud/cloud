@@ -34,6 +34,10 @@ import (
 	bgpv1alpha1 "go.datum.net/network/api/v1alpha1"
 )
 
+// IndexVPCAttachmentIdentity indexes a VPCAttachment by the "<vpc>-<attachment>"
+// pair galactic names its BGPAdvertisement after.
+const IndexVPCAttachmentIdentity = "status.identity"
+
 // BGPAdvertisementReconciler projects what the data plane published onto the
 // Datum API. galactic-router sets Advertised from live GoBGP runtime state, so
 // consuming its BGPAdvertisement keeps Datum types off the CNI ADD path and
