@@ -55,7 +55,9 @@ spec:
                     type: array
                   mode:
                     default: Netns
-                    description: Mode is how the workload consumes the interface.
+                    description: |-
+                      Mode is how the workload consumes the interface, resolved and written by
+                      the attachment controller rather than by whoever runs the workload.
                     enum:
                     - Netns
                     - Hypervisor

@@ -117,7 +117,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `name` _string_ | Name of the interface (e.g., eth0). |  |  |
-| `mode` _[VPCAttachmentInterfaceMode](#vpcattachmentinterfacemode)_ | Mode is how the workload consumes the interface. | Netns | Enum: [Netns Hypervisor] <br /> |
+| `mode` _[VPCAttachmentInterfaceMode](#vpcattachmentinterfacemode)_ | Mode is how the workload consumes the interface, resolved and written by<br />the attachment controller rather than by whoever runs the workload. | Netns | Enum: [Netns Hypervisor] <br /> |
 | `addresses` _[IPAddress](#ipaddress) array_ | A list of IPv4 or IPv6 addresses associated with the interface. Empty when<br />the guest manages its own addressing. |  | MaxItems: 16 <br />MaxLength: 64 <br /> |
 
 

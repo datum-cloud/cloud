@@ -99,7 +99,8 @@ type VPCAttachmentInterface struct {
 	// +default:value="eth0"
 	Name string `json:"name"`
 
-	// Mode is how the workload consumes the interface.
+	// Mode is how the workload consumes the interface, resolved and written by
+	// the attachment controller rather than by whoever runs the workload.
 	// +kubebuilder:default=Netns
 	// +optional
 	Mode VPCAttachmentInterfaceMode `json:"mode,omitempty"`
