@@ -30,25 +30,58 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 
 	cloudv1alpha1 "go.datum.net/cloud/api/v1alpha1"
+	"go.datum.net/cloud/internal/galactic"
+	"go.datum.net/cloud/internal/identifier"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
-// IndexVPCAttachmentIdentity indexes a VPCAttachment by the "<vpc>-<attachment>"
-// pair galactic names its BGPAdvertisement after.
-const IndexVPCAttachmentIdentity = "status.identity"
+const (
+	// IndexVPCAttachmentIdentity indexes a VPCAttachment by the
+	// "<vpc>-<attachment>" pair galactic names its BGPAdvertisement after.
+	IndexVPCAttachmentIdentity = "status.identity"
 
-// VPCAttachmentReconciler joins an attachment to the identifiers allocated for
-// the NetworkInterface it realizes, and points the interface back at it.
+	// IndexVPCAttachmentInterface indexes a VPCAttachment by the NetworkInterface
+	// it realizes.
+	IndexVPCAttachmentInterface = "spec.interfaceRef.name"
+
+	// LabelVPC records the base62 VPC identifier a NAD attaches to.
+	LabelVPC = "cloud.datumapis.com/vpc"
+
+	// LabelVPCAttachment records the base62 attachment identifier a NAD holds.
+	// The NAD is the allocation record for that identifier.
+	LabelVPCAttachment = "cloud.datumapis.com/vpc-attachment"
+)
+
+// maxIdentifierAttempts bounds the retry loop that draws an unused identifier.
+const maxIdentifierAttempts = 100
+
+// VPCAttachmentReconciler renders the NetworkAttachmentDefinition the galactic
+// CNI chain reads.
+//
+// The attachment is the one object that knows both ends: it names the VPC, it
+// carries how the guest consumes the interface, and it forward-references the
+// NetworkInterface holding the addresses. So it owns the NAD, the NAD is named
+// after it, and every render input is reachable from it without a reverse
+// lookup.
 type VPCAttachmentReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+
+	// APIReader bypasses the cache when listing allocated identifiers, so a NAD
+	// written moments ago cannot be missed and its identifier reissued.
+	APIReader client.Reader
 }
 
 // +kubebuilder:rbac:groups=cloud.datumapis.com,resources=vpcattachments,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=cloud.datumapis.com,resources=vpcattachments/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=cloud.datumapis.com,resources=vpcs,verbs=get;list;watch
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces,verbs=get;list;watch
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=k8s.cni.cncf.io,resources=network-attachment-definitions,verbs=get;list;watch;create;update;patch;delete
 
 func (r *VPCAttachmentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var attachment cloudv1alpha1.VPCAttachment
@@ -73,25 +106,29 @@ func (r *VPCAttachmentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 		return ctrl.Result{}, fmt.Errorf("get VPC %s: %w", vpcKey, err)
 	}
-
-	// The NAD is the allocation record, and it is named after the interface.
-	var nad nadv1.NetworkAttachmentDefinition
-	nadKey := types.NamespacedName{Namespace: attachment.Namespace, Name: attachment.Spec.InterfaceRef.Name}
-	if err := r.Get(ctx, nadKey, &nad); err != nil {
-		if apierrors.IsNotFound(err) {
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, r.markNotReady(ctx, &attachment,
-				"AwaitingAttachmentIdentifier", "waiting for the interface's NetworkAttachmentDefinition")
-		}
-		return ctrl.Result{}, fmt.Errorf("get NetworkAttachmentDefinition %s: %w", nadKey, err)
+	if vpc.Status.VPC == "" {
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, r.markNotReady(ctx, &attachment,
+			"VPCIdentifierPending", fmt.Sprintf("VPC %s has no identifier yet", vpc.Name))
 	}
-	attachmentID := nad.Labels[LabelVPCAttachment]
-	if attachmentID == "" {
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, r.markNotReady(ctx, &attachment,
-			"AwaitingAttachmentIdentifier", "waiting for the interface's attachment identifier")
+
+	networkInterface, err := r.dereferenceInterface(ctx, &attachment)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if networkInterface == nil {
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, r.markNotReady(ctx, &attachment,
+			"InterfaceUnresolved", fmt.Sprintf(
+				"NetworkInterface %s does not exist, or was recreated under a different UID",
+				attachment.Spec.InterfaceRef.Name))
+	}
+
+	nad, err := r.reconcileNAD(ctx, &attachment, &vpc, networkInterface)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
 
 	attachment.Status.VPC = vpc.Status.VPC
-	attachment.Status.VPCAttachment = attachmentID
+	attachment.Status.VPCAttachment = nad.Labels[LabelVPCAttachment]
 	attachment.Status.NetworkAttachmentDefinition = nad.Name
 	attachment.Status.ObservedGeneration = attachment.Generation
 	meta.SetStatusCondition(&attachment.Status.Conditions, metav1.Condition{
@@ -105,30 +142,137 @@ func (r *VPCAttachmentReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, fmt.Errorf("update VPC attachment %s status: %w", req.NamespacedName, err)
 	}
 
-	return ctrl.Result{}, r.recordAttachmentRef(ctx, &attachment)
+	return ctrl.Result{}, r.publishToInterface(ctx, &attachment, networkInterface, vpc.Status.VPC)
 }
 
-// recordAttachmentRef points the NetworkInterface at the attachment realizing it.
-func (r *VPCAttachmentReconciler) recordAttachmentRef(
+// dereferenceInterface resolves spec.interfaceRef. A UID that no longer matches
+// means the interface was recreated and this attachment is stale, so it must not
+// bind to the new one and render its addresses.
+func (r *VPCAttachmentReconciler) dereferenceInterface(
 	ctx context.Context, attachment *cloudv1alpha1.VPCAttachment,
-) error {
+) (*networkingv1alpha.NetworkInterface, error) {
 	var networkInterface networkingv1alpha.NetworkInterface
 	key := types.NamespacedName{Namespace: attachment.Namespace, Name: attachment.Spec.InterfaceRef.Name}
 	if err := r.Get(ctx, key, &networkInterface); err != nil {
-		return client.IgnoreNotFound(err)
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get network interface %s: %w", key, err)
+	}
+	if uid := attachment.Spec.InterfaceRef.UID; uid != "" && uid != string(networkInterface.UID) {
+		return nil, nil
+	}
+	return &networkInterface, nil
+}
+
+// reconcileNAD creates or updates the NAD this attachment owns.
+func (r *VPCAttachmentReconciler) reconcileNAD(
+	ctx context.Context,
+	attachment *cloudv1alpha1.VPCAttachment,
+	vpc *cloudv1alpha1.VPC,
+	networkInterface *networkingv1alpha.NetworkInterface,
+) (*nadv1.NetworkAttachmentDefinition, error) {
+	nad := &nadv1.NetworkAttachmentDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: attachment.Name, Namespace: attachment.Namespace},
 	}
 
+	attachmentID := ""
+	if err := r.Get(ctx, client.ObjectKeyFromObject(nad), nad); err == nil {
+		attachmentID = nad.Labels[LabelVPCAttachment]
+	} else if !apierrors.IsNotFound(err) {
+		return nil, fmt.Errorf("get NetworkAttachmentDefinition %s: %w", nad.Name, err)
+	}
+	if attachmentID == "" {
+		allocated, err := r.allocateAttachmentIdentifier(ctx, vpc.Status.VPC)
+		if err != nil {
+			return nil, err
+		}
+		attachmentID = allocated
+	}
+
+	addresses := make([]string, 0, len(networkInterface.Spec.Addresses))
+	for _, address := range networkInterface.Spec.Addresses {
+		addresses = append(addresses, address.Address)
+	}
+	config, err := galactic.ConflistJSON(attachment.Name, masterPlugin(attachment.Spec.Interface.Mode),
+		vpc.Status.VPC, attachmentID, networkInterface.Spec.MTU, addresses)
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, nad, func() error {
+		if nad.Labels == nil {
+			nad.Labels = map[string]string{}
+		}
+		nad.Labels[LabelVPC] = vpc.Status.VPC
+		nad.Labels[LabelVPCAttachment] = attachmentID
+		nad.Spec.Config = config
+		return controllerutil.SetControllerReference(attachment, nad, r.Scheme)
+	}); err != nil {
+		return nil, fmt.Errorf("reconcile NetworkAttachmentDefinition %s: %w", nad.Name, err)
+	}
+	return nad, nil
+}
+
+// masterPlugin translates how a guest consumes an interface into the galactic
+// binary that realizes it. This is the only place the two vocabularies meet.
+func masterPlugin(mode cloudv1alpha1.VPCAttachmentInterfaceMode) string {
+	if mode == cloudv1alpha1.VPCAttachmentInterfaceModeHypervisor {
+		return galactic.PluginTap
+	}
+	return galactic.PluginVeth
+}
+
+// allocateAttachmentIdentifier draws a random identifier unused within the VPC.
+// Random rather than lowest-free, so a freed identifier is not immediately
+// reissued while its BGPAdvertisement is still being garbage collected.
+func (r *VPCAttachmentReconciler) allocateAttachmentIdentifier(ctx context.Context, vpc string) (string, error) {
+	var nads nadv1.NetworkAttachmentDefinitionList
+	if err := r.APIReader.List(ctx, &nads, client.MatchingLabels{LabelVPC: vpc}); err != nil {
+		return "", fmt.Errorf("list NetworkAttachmentDefinitions for VPC %s: %w", vpc, err)
+	}
+	used := make(map[string]struct{}, len(nads.Items))
+	for _, nad := range nads.Items {
+		if id := nad.Labels[LabelVPCAttachment]; id != "" {
+			used[id] = struct{}{}
+		}
+	}
+
+	for range maxIdentifierAttempts {
+		candidate, err := identifier.RandomVPCAttachmentBase62()
+		if err != nil {
+			return "", err
+		}
+		if _, taken := used[candidate]; !taken {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("no unused attachment identifier found in VPC %s after %d attempts",
+		vpc, maxIdentifierAttempts)
+}
+
+// publishToInterface points the NetworkInterface at the attachment realizing it
+// and records the VPC it landed in. Programmed is left to the data plane.
+func (r *VPCAttachmentReconciler) publishToInterface(
+	ctx context.Context,
+	attachment *cloudv1alpha1.VPCAttachment,
+	networkInterface *networkingv1alpha.NetworkInterface,
+	vpc string,
+) error {
 	ref := &networkingv1alpha.NetworkInterfaceAttachmentRef{
 		APIGroup: cloudv1alpha1.GroupVersion.Group,
 		Kind:     "VPCAttachment",
 		Name:     attachment.Name,
 	}
-	if current := networkInterface.Status.AttachmentRef; current != nil && *current == *ref {
+	current := networkInterface.Status.AttachmentRef
+	if current != nil && *current == *ref && networkInterface.Status.VPC == vpc {
 		return nil
 	}
 	networkInterface.Status.AttachmentRef = ref
-	if err := r.Status().Update(ctx, &networkInterface); err != nil {
-		return fmt.Errorf("record attachment ref on network interface %s: %w", key, err)
+	networkInterface.Status.VPC = vpc
+	if err := r.Status().Update(ctx, networkInterface); err != nil {
+		return fmt.Errorf("publish attachment onto network interface %s: %w",
+			client.ObjectKeyFromObject(networkInterface), err)
 	}
 	return nil
 }
@@ -152,23 +296,26 @@ func (r *VPCAttachmentReconciler) markNotReady(
 
 // SetupWithManager registers the reconciler with the manager.
 func (r *VPCAttachmentReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	nadToAttachments := func(ctx context.Context, obj client.Object) []ctrl.Request {
+	interfaceToAttachments := func(ctx context.Context, obj client.Object) []ctrl.Request {
 		var attachments cloudv1alpha1.VPCAttachmentList
-		if err := mgr.GetClient().List(ctx, &attachments, client.InNamespace(obj.GetNamespace())); err != nil {
+		if err := mgr.GetClient().List(ctx, &attachments,
+			client.InNamespace(obj.GetNamespace()),
+			client.MatchingFields{IndexVPCAttachmentInterface: obj.GetName()}); err != nil {
 			return nil
 		}
-		var requests []ctrl.Request
-		for _, attachment := range attachments.Items {
-			if attachment.Spec.InterfaceRef != nil && attachment.Spec.InterfaceRef.Name == obj.GetName() {
-				requests = append(requests, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(&attachment)})
-			}
+		requests := make([]ctrl.Request, 0, len(attachments.Items))
+		for i := range attachments.Items {
+			requests = append(requests, ctrl.Request{
+				NamespacedName: client.ObjectKeyFromObject(&attachments.Items[i]),
+			})
 		}
 		return requests
 	}
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&cloudv1alpha1.VPCAttachment{}).
-		Watches(&nadv1.NetworkAttachmentDefinition{}, handler.EnqueueRequestsFromMapFunc(nadToAttachments)).
+		Owns(&nadv1.NetworkAttachmentDefinition{}).
+		Watches(&networkingv1alpha.NetworkInterface{}, handler.EnqueueRequestsFromMapFunc(interfaceToAttachments)).
 		Named("vpcattachment").
 		Complete(r)
 }

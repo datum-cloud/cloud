@@ -45,7 +45,6 @@ type BGPAdvertisementReconciler struct {
 
 // +kubebuilder:rbac:groups=network.datumapis.com,resources=bgpadvertisements;bgprouters,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cloud.datumapis.com,resources=vpcattachments/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces/status,verbs=get;update;patch
 
 func (r *BGPAdvertisementReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var advertisement bgpv1alpha1.BGPAdvertisement
@@ -90,7 +89,7 @@ func (r *BGPAdvertisementReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			return ctrl.Result{}, fmt.Errorf("update VPC attachment %s status: %w",
 				client.ObjectKeyFromObject(attachment), err)
 		}
-		if err := r.projectOntoInterface(ctx, attachment, vpc, programmed); err != nil {
+		if err := r.projectOntoInterface(ctx, attachment, programmed); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -101,7 +100,7 @@ func (r *BGPAdvertisementReconciler) Reconcile(ctx context.Context, req ctrl.Req
 // projectOntoInterface closes the Programmed condition NSO deliberately leaves
 // for whoever realizes the interface.
 func (r *BGPAdvertisementReconciler) projectOntoInterface(
-	ctx context.Context, attachment *cloudv1alpha1.VPCAttachment, vpc string, programmed metav1.Condition,
+	ctx context.Context, attachment *cloudv1alpha1.VPCAttachment, programmed metav1.Condition,
 ) error {
 	if attachment.Spec.InterfaceRef == nil {
 		return nil
@@ -111,8 +110,10 @@ func (r *BGPAdvertisementReconciler) projectOntoInterface(
 	if err := r.Get(ctx, key, &networkInterface); err != nil {
 		return client.IgnoreNotFound(err)
 	}
+	if uid := attachment.Spec.InterfaceRef.UID; uid != "" && uid != string(networkInterface.UID) {
+		return nil
+	}
 
-	networkInterface.Status.VPC = vpc
 	interfaceProgrammed := programmed
 	interfaceProgrammed.Type = networkingv1alpha.NetworkInterfaceProgrammed
 	interfaceProgrammed.ObservedGeneration = networkInterface.Generation

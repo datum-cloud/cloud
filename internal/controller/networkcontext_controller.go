@@ -35,9 +35,6 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
-// maxIdentifierAttempts bounds the retry loop that draws an unused identifier.
-const maxIdentifierAttempts = 100
-
 // NetworkContextReconciler gives a network's presence in one location its
 // data-plane identity: one VPC per NetworkContext, carrying the base62 VPC
 // identifier the whole galactic fabric keys on.

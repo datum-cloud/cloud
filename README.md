@@ -12,7 +12,7 @@ Kubernetes CRDs for virtual networking, and the controller that reconciles them 
 
 Services defines Kubernetes Custom Resource Definitions for virtual tenant networking, plus `vpc-controller`, which realizes them against the galactic data plane.
 
-The controller runs in a POP cell beside network-services-operator, compute and the workload providers. It turns a `NetworkContext` into a `VPC` identity, allocates an attachment identifier and renders a `NetworkAttachmentDefinition` per `NetworkInterface`, and projects what the data plane published back onto `VPCAttachment` and `NetworkInterface` status.
+The controller runs in a POP cell beside network-services-operator, compute and the workload providers. It turns a `NetworkContext` into a `VPC` identity, allocates an attachment identifier and renders a `NetworkAttachmentDefinition` per `VPCAttachment`, and projects what the data plane published back onto `VPCAttachment` and `NetworkInterface` status.
 
 ## Resources
 

@@ -15,13 +15,29 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-// Package controller reconciles VPC and VPCAttachment in a POP cell: it turns a
-// NetworkContext into a VPC identity, allocates an attachment identifier and
-// NetworkAttachmentDefinition per VPCAttachment, and projects what the galactic
-// data plane published back onto the Datum API.
 package controller
 
-// Leader election is what serializes identifier allocation, so the lease and
-// event permissions below are load-bearing rather than boilerplate.
-// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+import (
+	"testing"
+
+	cloudv1alpha1 "go.datum.net/cloud/api/v1alpha1"
+	"go.datum.net/cloud/internal/galactic"
+)
+
+func TestMasterPlugin(t *testing.T) {
+	tests := []struct {
+		mode cloudv1alpha1.VPCAttachmentInterfaceMode
+		want string
+	}{
+		{cloudv1alpha1.VPCAttachmentInterfaceModeNetns, galactic.PluginVeth},
+		{cloudv1alpha1.VPCAttachmentInterfaceModeHypervisor, galactic.PluginTap},
+		{"", galactic.PluginVeth},
+	}
+	for _, test := range tests {
+		t.Run(string(test.mode), func(t *testing.T) {
+			if got := masterPlugin(test.mode); got != test.want {
+				t.Errorf("got %q, want %q", got, test.want)
+			}
+		})
+	}
+}

@@ -85,7 +85,18 @@ func main() {
 			}
 			return []string{galactic.AdvertisementName(attachment.Status.VPC, attachment.Status.VPCAttachment)}
 		}); err != nil {
-		setupLog.Error(err, "unable to index VPC attachments")
+		setupLog.Error(err, "unable to index VPC attachments by identity")
+		os.Exit(1)
+	}
+	if err := mgr.GetFieldIndexer().IndexField(ctx, &cloudv1alpha1.VPCAttachment{},
+		controller.IndexVPCAttachmentInterface, func(obj client.Object) []string {
+			attachment, ok := obj.(*cloudv1alpha1.VPCAttachment)
+			if !ok || attachment.Spec.InterfaceRef == nil {
+				return nil
+			}
+			return []string{attachment.Spec.InterfaceRef.Name}
+		}); err != nil {
+		setupLog.Error(err, "unable to index VPC attachments by interface")
 		os.Exit(1)
 	}
 
@@ -95,14 +106,8 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "NetworkContext")
 		os.Exit(1)
 	}
-	if err := (&controller.NetworkInterfaceReconciler{
-		Client: mgr.GetClient(), Scheme: mgr.GetScheme(), APIReader: mgr.GetAPIReader(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "NetworkInterface")
-		os.Exit(1)
-	}
 	if err := (&controller.VPCAttachmentReconciler{
-		Client: mgr.GetClient(), Scheme: mgr.GetScheme(),
+		Client: mgr.GetClient(), Scheme: mgr.GetScheme(), APIReader: mgr.GetAPIReader(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "VPCAttachment")
 		os.Exit(1)
