@@ -14,6 +14,8 @@ Services defines Kubernetes Custom Resource Definitions for virtual tenant netwo
 
 The controller runs in a POP cell beside network-services-operator, compute and the workload providers. It turns a `NetworkContext` into a `VPC` identity; when a `NetworkInterface` claim is fulfilled it creates the `VPCAttachment` and the `NetworkAttachmentDefinition`, allocates the attachment identifier, and publishes the annotations a workload must carry; and it projects what the data plane reported back onto `VPCAttachment` and `NetworkInterface` status.
 
+It also serves a mutating admission webhook that injects the Multus annotation into Pods labelled `networking.datumapis.com/inject-interfaces: "true"`, so Multus knowledge stays inside the one component that writes NetworkAttachmentDefinitions.
+
 It requires `--attachment-mode` (`Netns` or `Hypervisor`) — how guests in the cell consume an interface. There is no default, because defaulting would hand a microVM an interface it cannot use.
 
 ## Resources

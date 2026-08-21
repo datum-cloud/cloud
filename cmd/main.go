@@ -34,10 +34,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	cloudv1alpha1 "go.datum.net/cloud/api/v1alpha1"
 	"go.datum.net/cloud/internal/controller"
 	"go.datum.net/cloud/internal/galactic"
+	datumwebhook "go.datum.net/cloud/internal/webhook"
+	computev1alpha "go.datum.net/compute/api/v1alpha"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	bgpv1alpha1 "go.datum.net/network/api/v1alpha1"
 )
@@ -50,10 +53,12 @@ func init() {
 	utilruntime.Must(networkingv1alpha.AddToScheme(scheme))
 	utilruntime.Must(bgpv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(nadv1.AddToScheme(scheme))
+	utilruntime.Must(computev1alpha.AddToScheme(scheme))
 }
 
 func main() {
-	var metricsAddr, probeAddr, rawAttachmentMode string
+	var metricsAddr, probeAddr, rawAttachmentMode, webhookCertDir string
+	var webhookPort int
 	var enableLeaderElection bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "Address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "Address the probe endpoint binds to.")
@@ -61,6 +66,9 @@ func main() {
 		"Enable leader election. A single writer is what makes identifier allocation safe.")
 	flag.StringVar(&rawAttachmentMode, "attachment-mode", "",
 		"Required. How guests in this cell consume an interface: Netns or Hypervisor.")
+	flag.IntVar(&webhookPort, "webhook-port", 9443, "Port the admission webhook server binds to.")
+	flag.StringVar(&webhookCertDir, "webhook-cert-dir", "/tmp/k8s-webhook-server/serving-certs",
+		"Directory holding the webhook server's tls.crt and tls.key.")
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -81,6 +89,10 @@ func main() {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "vpc-controller.cloud.datumapis.com",
+		WebhookServer: webhook.NewServer(webhook.Options{
+			Port:    webhookPort,
+			CertDir: webhookCertDir,
+		}),
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
@@ -118,6 +130,8 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "BGPAdvertisement")
 		os.Exit(1)
 	}
+
+	(&datumwebhook.PodInterfaceInjector{Client: mgr.GetClient()}).SetupWithManager(mgr)
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")

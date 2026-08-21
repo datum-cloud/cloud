@@ -19,16 +19,13 @@ package controller
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"maps"
 	"time"
 
 	nadv1 "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -50,13 +47,10 @@ const (
 	// The NAD is the allocation record for that identifier.
 	LabelVPCAttachment = "cloud.datumapis.com/vpc-attachment"
 
-	// MultusNetworksAnnotation is the annotation Multus resolves at sandbox
-	// creation to attach a workload to a NAD.
-	MultusNetworksAnnotation = "k8s.v1.cni.cncf.io/networks"
-
-	// ReasonConsumerAnnotationsUnsupported reports that the API server discarded
-	// the consumer annotations, so no workload can be attached.
-	ReasonConsumerAnnotationsUnsupported = "ConsumerAnnotationsUnsupported"
+	// ConditionTypePrepared reports that the data plane's pre-Pod artifacts exist.
+	// Unlike Programmed, which only becomes true at CNI ADD, it is safe to gate
+	// Pod creation on. network-services-operator is adding the type in parallel.
+	ConditionTypePrepared = "Prepared"
 )
 
 // maxIdentifierAttempts bounds the retry loop that draws an unused identifier.
@@ -87,6 +81,8 @@ type NetworkInterfaceReconciler struct {
 
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaceclaims,verbs=get;list;watch
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaceclaims/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=cloud.datumapis.com,resources=vpcs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cloud.datumapis.com,resources=vpcattachments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cloud.datumapis.com,resources=vpcattachments/status,verbs=get;update;patch
@@ -111,12 +107,15 @@ func (r *NetworkInterfaceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 	if err := r.Get(ctx, vpcKey, &vpc); err != nil {
 		if apierrors.IsNotFound(err) {
-			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, r.markPrepared(ctx, &networkInterface,
+				metav1.ConditionFalse, "AwaitingVPC", fmt.Sprintf("VPC %s does not exist yet", vpcKey.Name))
 		}
 		return ctrl.Result{}, fmt.Errorf("get VPC %s: %w", vpcKey, err)
 	}
 	if vpc.Status.VPC == "" {
-		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, r.markPrepared(ctx, &networkInterface,
+			metav1.ConditionFalse, "AwaitingVPCIdentifier",
+			fmt.Sprintf("VPC %s has no identifier yet", vpc.Name))
 	}
 
 	attachment, err := r.reconcileAttachment(ctx, &networkInterface, &vpc)
@@ -127,17 +126,10 @@ func (r *NetworkInterfaceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	annotationsSupported, err := r.publishToInterface(ctx, &networkInterface, attachment, &vpc, nad)
-	if err != nil {
+	if err := r.publishAttachmentStatus(ctx, attachment, &vpc, nad); err != nil {
 		return ctrl.Result{}, err
 	}
-	if !annotationsSupported {
-		ctrl.LoggerFrom(ctx).Info("network interface status.consumerAnnotations was not persisted",
-			"field", "status.consumerAnnotations",
-			"reason", ReasonConsumerAnnotationsUnsupported,
-			"dependency", "network-services-operator must ship NetworkInterface.status.consumerAnnotations")
-	}
-	return ctrl.Result{}, r.publishAttachmentStatus(ctx, attachment, &vpc, nad, annotationsSupported)
+	return ctrl.Result{}, r.publishToInterface(ctx, &networkInterface, attachment, &vpc)
 }
 
 // claimFulfilled reports whether an interface is bound to a claim and holds
@@ -280,111 +272,79 @@ func (r *NetworkInterfaceReconciler) publishAttachmentStatus(
 	attachment *cloudv1alpha1.VPCAttachment,
 	vpc *cloudv1alpha1.VPC,
 	nad *nadv1.NetworkAttachmentDefinition,
-	annotationsSupported bool,
 ) error {
 	attachment.Status.VPC = vpc.Status.VPC
 	attachment.Status.VPCAttachment = nad.Labels[LabelVPCAttachment]
 	attachment.Status.NetworkAttachmentDefinition = nad.Name
 	attachment.Status.ObservedGeneration = attachment.Generation
-	meta.SetStatusCondition(&attachment.Status.Conditions,
-		attachmentReadyCondition(nad, attachment.Generation, annotationsSupported))
+	meta.SetStatusCondition(&attachment.Status.Conditions, metav1.Condition{
+		Type:               cloudv1alpha1.ConditionTypeReady,
+		Status:             metav1.ConditionTrue,
+		Reason:             "AttachmentDefinitionReady",
+		Message:            fmt.Sprintf("NetworkAttachmentDefinition %s is ready for use", nad.Name),
+		ObservedGeneration: attachment.Generation,
+	})
 	if err := r.Status().Update(ctx, attachment); err != nil {
 		return fmt.Errorf("update VPC attachment %s status: %w", client.ObjectKeyFromObject(attachment), err)
 	}
 	return nil
 }
 
-// attachmentReadyCondition reports the attachment unready when the consumer
-// annotations did not persist: the data plane is programmed but no workload can
-// be delivered onto it, and a caller polling for the annotations would otherwise
-// wait forever with nothing to read.
-func attachmentReadyCondition(
-	nad *nadv1.NetworkAttachmentDefinition, generation int64, annotationsSupported bool,
-) metav1.Condition {
-	if !annotationsSupported {
-		return metav1.Condition{
-			Type:   cloudv1alpha1.ConditionTypeReady,
-			Status: metav1.ConditionFalse,
-			Reason: ReasonConsumerAnnotationsUnsupported,
-			Message: "NetworkInterface.status.consumerAnnotations was pruned by the API server; " +
-				"network-services-operator must ship the field before a workload can be attached",
-			ObservedGeneration: generation,
-		}
-	}
-	return metav1.Condition{
-		Type:               cloudv1alpha1.ConditionTypeReady,
-		Status:             metav1.ConditionTrue,
-		Reason:             "AttachmentDefinitionReady",
-		Message:            fmt.Sprintf("NetworkAttachmentDefinition %s is ready for use", nad.Name),
-		ObservedGeneration: generation,
-	}
-}
-
-// publishToInterface hands the consumer everything it needs: what realizes the
-// interface, which VPC it landed in, and the annotations to copy onto the
-// workload object. The annotations are opaque to whoever applies them.
+// publishToInterface records what realizes the interface and which VPC it landed
+// in, then reports Prepared so compute can release the Pod.
 func (r *NetworkInterfaceReconciler) publishToInterface(
 	ctx context.Context,
 	networkInterface *networkingv1alpha.NetworkInterface,
 	attachment *cloudv1alpha1.VPCAttachment,
 	vpc *cloudv1alpha1.VPC,
-	nad *nadv1.NetworkAttachmentDefinition,
-) (bool, error) {
+) error {
 	ref := &networkingv1alpha.NetworkInterfaceAttachmentRef{
 		APIGroup: cloudv1alpha1.GroupVersion.Group,
 		Kind:     "VPCAttachment",
 		Name:     attachment.Name,
 	}
-	if current := networkInterface.Status.AttachmentRef; current == nil || *current != *ref ||
-		networkInterface.Status.VPC != vpc.Status.VPC {
-		networkInterface.Status.AttachmentRef = ref
-		networkInterface.Status.VPC = vpc.Status.VPC
-		if err := r.Status().Update(ctx, networkInterface); err != nil {
-			return false, fmt.Errorf("publish attachment onto network interface %s: %w",
-				client.ObjectKeyFromObject(networkInterface), err)
-		}
-	}
-
-	return r.publishConsumerAnnotations(ctx, networkInterface, consumerAnnotations(nad))
+	networkInterface.Status.AttachmentRef = ref
+	networkInterface.Status.VPC = vpc.Status.VPC
+	return r.markPrepared(ctx, networkInterface, metav1.ConditionTrue, "AttachmentReady",
+		fmt.Sprintf("VPCAttachment %s and its attachment definition exist", attachment.Name))
 }
 
-// consumerAnnotations is what a workload must carry to be delivered onto this
-// attachment.
-func consumerAnnotations(nad *nadv1.NetworkAttachmentDefinition) map[string]string {
-	return map[string]string{
-		MultusNetworksAnnotation: fmt.Sprintf("%s/%s", nad.Namespace, nad.Name),
+// markPrepared reports whether the pre-Pod artifacts exist, on the interface and
+// on the claim holding it, which is what compute gates Pod creation on.
+func (r *NetworkInterfaceReconciler) markPrepared(
+	ctx context.Context,
+	networkInterface *networkingv1alpha.NetworkInterface,
+	status metav1.ConditionStatus,
+	reason, message string,
+) error {
+	condition := metav1.Condition{
+		Type:               ConditionTypePrepared,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: networkInterface.Generation,
 	}
-}
-
-// publishConsumerAnnotations writes status.consumerAnnotations as a raw merge
-// patch, because the field is landing in network-services-operator in parallel
-// and this repo cannot type against it yet. It reports whether the write
-// survived: an API server that does not know the field prunes it and answers
-// success.
-func (r *NetworkInterfaceReconciler) publishConsumerAnnotations(
-	ctx context.Context, networkInterface *networkingv1alpha.NetworkInterface, annotations map[string]string,
-) (bool, error) {
-	patch, err := json.Marshal(map[string]any{"status": map[string]any{"consumerAnnotations": annotations}})
-	if err != nil {
-		return false, fmt.Errorf("marshal consumer annotations patch: %w", err)
-	}
-	if err := r.Status().Patch(ctx, networkInterface, client.RawPatch(types.MergePatchType, patch)); err != nil {
-		return false, fmt.Errorf("publish consumer annotations onto network interface %s: %w",
+	meta.SetStatusCondition(&networkInterface.Status.Conditions, condition)
+	if err := r.Status().Update(ctx, networkInterface); err != nil {
+		return fmt.Errorf("update network interface %s status: %w",
 			client.ObjectKeyFromObject(networkInterface), err)
 	}
 
-	observed := &unstructured.Unstructured{}
-	observed.SetGroupVersionKind(networkingv1alpha.GroupVersion.WithKind("NetworkInterface"))
-	if err := r.APIReader.Get(ctx, client.ObjectKeyFromObject(networkInterface), observed); err != nil {
-		return false, fmt.Errorf("read back network interface %s: %w",
-			client.ObjectKeyFromObject(networkInterface), err)
+	if networkInterface.Spec.ClaimRef == nil {
+		return nil
 	}
-	persisted, _, err := unstructured.NestedStringMap(observed.Object, "status", "consumerAnnotations")
-	if err != nil {
-		return false, fmt.Errorf("read status.consumerAnnotations on network interface %s: %w",
-			client.ObjectKeyFromObject(networkInterface), err)
+	var claim networkingv1alpha.NetworkInterfaceClaim
+	key := types.NamespacedName{Namespace: networkInterface.Namespace, Name: networkInterface.Spec.ClaimRef.Name}
+	if err := r.Get(ctx, key, &claim); err != nil {
+		return client.IgnoreNotFound(err)
 	}
-	return maps.Equal(persisted, annotations), nil
+	claimCondition := condition
+	claimCondition.ObservedGeneration = claim.Generation
+	meta.SetStatusCondition(&claim.Status.Conditions, claimCondition)
+	if err := r.Status().Update(ctx, &claim); err != nil {
+		return fmt.Errorf("update network interface claim %s status: %w", key, err)
+	}
+	return nil
 }
 
 // SetupWithManager registers the reconciler with the manager.

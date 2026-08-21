@@ -18,10 +18,8 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 package controller
 
 import (
-	"strings"
 	"testing"
 
-	nadv1 "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	cloudv1alpha1 "go.datum.net/cloud/api/v1alpha1"
@@ -43,20 +41,6 @@ func TestMasterPlugin(t *testing.T) {
 				t.Errorf("got %q, want %q", got, test.want)
 			}
 		})
-	}
-}
-
-func TestConsumerAnnotations(t *testing.T) {
-	nad := &nadv1.NetworkAttachmentDefinition{
-		ObjectMeta: metav1.ObjectMeta{Name: "web-0-eth0", Namespace: "my-project"},
-	}
-	got := consumerAnnotations(nad)
-	want := "my-project/web-0-eth0"
-	if got[MultusNetworksAnnotation] != want {
-		t.Errorf("%s: got %q, want %q", MultusNetworksAnnotation, got[MultusNetworksAnnotation], want)
-	}
-	if len(got) != 1 {
-		t.Errorf("annotation count: got %d, want 1", len(got))
 	}
 }
 
@@ -97,35 +81,5 @@ func TestClaimFulfilled(t *testing.T) {
 				t.Errorf("got %v, want %v", got, test.want)
 			}
 		})
-	}
-}
-
-func TestAttachmentReadyConditionReportsUnsupportedAnnotations(t *testing.T) {
-	nad := &nadv1.NetworkAttachmentDefinition{
-		ObjectMeta: metav1.ObjectMeta{Name: "web-0-eth0", Namespace: "my-project"},
-	}
-
-	ready := attachmentReadyCondition(nad, 3, true)
-	if ready.Status != metav1.ConditionTrue {
-		t.Errorf("supported status: got %q, want %q", ready.Status, metav1.ConditionTrue)
-	}
-	if ready.Reason != "AttachmentDefinitionReady" {
-		t.Errorf("supported reason: got %q, want %q", ready.Reason, "AttachmentDefinitionReady")
-	}
-
-	// A pruned field makes the API server answer success, so the only place an
-	// operator can learn the contract is unimplemented is this condition.
-	unsupported := attachmentReadyCondition(nad, 3, false)
-	if unsupported.Status != metav1.ConditionFalse {
-		t.Errorf("unsupported status: got %q, want %q", unsupported.Status, metav1.ConditionFalse)
-	}
-	if unsupported.Reason != ReasonConsumerAnnotationsUnsupported {
-		t.Errorf("unsupported reason: got %q, want %q", unsupported.Reason, ReasonConsumerAnnotationsUnsupported)
-	}
-	if !strings.Contains(unsupported.Message, "consumerAnnotations") {
-		t.Errorf("unsupported message does not name the missing field: %q", unsupported.Message)
-	}
-	if unsupported.ObservedGeneration != 3 {
-		t.Errorf("observedGeneration: got %d, want 3", unsupported.ObservedGeneration)
 	}
 }

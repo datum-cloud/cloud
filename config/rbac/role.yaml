@@ -34,6 +34,14 @@ rules:
   - patch
   - update
 - apiGroups:
+  - compute.datumapis.com
+  resources:
+  - instances
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - coordination.k8s.io
   resources:
   - leases
@@ -70,6 +78,7 @@ rules:
   - networking.datumapis.com
   resources:
   - networkcontexts
+  - networkinterfaceclaims
   - networkinterfaces
   - subnets
   verbs:
@@ -79,6 +88,7 @@ rules:
 - apiGroups:
   - networking.datumapis.com
   resources:
+  - networkinterfaceclaims/status
   - networkinterfaces/status
   verbs:
   - get

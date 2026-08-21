@@ -37,6 +37,12 @@ spec:
           ports:
             - name: metrics
               containerPort: 8080
+            - name: webhook
+              containerPort: 9443
+          volumeMounts:
+            - name: webhook-certs
+              mountPath: /tmp/k8s-webhook-server/serving-certs
+              readOnly: true
           livenessProbe:
             httpGet:
               path: /healthz
@@ -60,4 +66,8 @@ spec:
               memory: 64Mi
             limits:
               memory: 256Mi
+      volumes:
+        - name: webhook-certs
+          secret:
+            secretName: webhook-server-cert
       terminationGracePeriodSeconds: 10

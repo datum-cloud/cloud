@@ -17,8 +17,9 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 // Package controller reconciles VPC and VPCAttachment in a POP cell: it turns a
 // NetworkContext into a VPC identity, creates the attachment and the
-// NetworkAttachmentDefinition when a NetworkInterface claim is fulfilled, and
-// projects what the galactic data plane published back onto the Datum API.
+// NetworkAttachmentDefinition when a NetworkInterface claim is fulfilled,
+// reports Prepared, and projects what the galactic data plane published back
+// onto the Datum API.
 package controller
 
 // Leader election is what serializes identifier allocation, so the lease and
