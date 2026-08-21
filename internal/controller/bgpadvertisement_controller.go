@@ -114,9 +114,6 @@ func (r *BGPAdvertisementReconciler) projectOntoInterface(
 	if err := r.Get(ctx, key, &networkInterface); err != nil {
 		return client.IgnoreNotFound(err)
 	}
-	if uid := attachment.Spec.InterfaceRef.UID; uid != "" && uid != string(networkInterface.UID) {
-		return nil
-	}
 
 	interfaceProgrammed := programmed
 	interfaceProgrammed.Type = networkingv1alpha.NetworkInterfaceProgrammed

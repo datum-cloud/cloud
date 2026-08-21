@@ -156,10 +156,7 @@ func (r *NetworkInterfaceReconciler) reconcileAttachment(
 	}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, attachment, func() error {
 		attachment.Spec.VPC = cloudv1alpha1.VPCRef{Name: vpc.Name}
-		attachment.Spec.InterfaceRef = &cloudv1alpha1.NetworkInterfaceRef{
-			Name: networkInterface.Name,
-			UID:  string(networkInterface.UID),
-		}
+		attachment.Spec.InterfaceRef = &cloudv1alpha1.NetworkInterfaceRef{Name: networkInterface.Name}
 		attachment.Spec.Interface.Name = networkInterface.Spec.InterfaceName
 		attachment.Spec.Interface.Mode = r.AttachmentMode
 		attachment.Spec.Interface.Addresses = interfaceAddresses(networkInterface)
