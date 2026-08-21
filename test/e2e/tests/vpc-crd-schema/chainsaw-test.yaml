@@ -182,7 +182,41 @@ spec:
               fi
               echo "OK: interface name defaulted to eth0"
 
-    - name: reject-vpcattachment-empty-addresses
+    - name: accept-vpcattachment-empty-addresses
+      try:
+        - script:
+            content: |
+              set +e
+              OUTPUT=$(kubectl apply -n "$NAMESPACE" -f - 2>&1 <<'EOF'
+              apiVersion: cloud.datumapis.com/v1alpha1
+              kind: VPCAttachment
+              metadata:
+                name: e2e-no-addressing-attachment
+              spec:
+                vpc:
+                  name: e2e-valid-vpc
+                interface:
+                  name: eth0
+                  addresses: []
+              EOF
+              )
+              EXIT=$?
+              set -e
+              if [ "$EXIT" -ne 0 ]; then
+                echo "ERROR: expected a guest managing its own addressing to be accepted"
+                echo "Server response: $OUTPUT"
+                exit 1
+              fi
+              MODE=$(kubectl get vpcattachments.cloud.datumapis.com e2e-no-addressing-attachment \
+                -n "$NAMESPACE" -o jsonpath='{.spec.interface.mode}')
+              if [ "$MODE" != "Netns" ]; then
+                echo "ERROR: expected interface mode default 'Netns' but got '$MODE'"
+                exit 1
+              fi
+              kubectl delete vpcattachments.cloud.datumapis.com e2e-no-addressing-attachment -n "$NAMESPACE"
+              echo "OK: empty addresses accepted, interface mode defaulted to Netns"
+
+    - name: reject-vpcattachment-invalid-interface-mode
       try:
         - script:
             content: |
@@ -197,17 +231,17 @@ spec:
                   name: e2e-valid-vpc
                 interface:
                   name: eth0
-                  addresses: []
+                  mode: tap
               EOF
               )
               EXIT=$?
               set -e
               if [ "$EXIT" -eq 0 ]; then
-                echo "ERROR: expected rejection of empty addresses array but resource was accepted"
+                echo "ERROR: expected rejection of unsupported interface mode but resource was accepted"
                 kubectl delete vpcattachments.cloud.datumapis.com e2e-invalid-attachment -n "$NAMESPACE" 2>/dev/null || true
                 exit 1
               fi
-              echo "OK: empty addresses array correctly rejected"
+              echo "OK: unsupported interface mode correctly rejected"
               echo "Server response: $OUTPUT"
 
     - name: reject-vpcattachment-missing-vpc

@@ -23,13 +23,24 @@ import (
 
 const VPCAttachmentAnnotation = "k8s.v1alpha1.cloud.datumapis.com/vpc-attachment"
 
+const (
+	// ConditionTypeReady reports that identifiers are allocated and the
+	// NetworkAttachmentDefinition is written.
+	ConditionTypeReady = "Ready"
+
+	// ConditionTypeProgrammed reports that the data plane realized the attachment.
+	ConditionTypeProgrammed = "Programmed"
+)
+
 // VPCAttachmentSpec defines the desired state of VPCAttachment
-//
-// +kubebuilder:validation:XValidation:rule="has(self.vpc) && self.vpc.name != ”",message="vpc reference is required"
 type VPCAttachmentSpec struct {
 	// VPC this attachment belongs to.
 	// +required
 	VPC VPCRef `json:"vpc"`
+
+	// NetworkInterface this attachment realizes.
+	// +optional
+	InterfaceRef *NetworkInterfaceRef `json:"interfaceRef,omitempty"`
 
 	// Interface defines the network interface configuration.
 	// +required
@@ -43,27 +54,61 @@ type VPCRef struct {
 	Name string `json:"name"`
 }
 
+// NetworkInterfaceRef references a networking.datumapis.com NetworkInterface in
+// the same namespace.
+type NetworkInterfaceRef struct {
+	// Name of the NetworkInterface.
+	// +kubebuilder:validation:MinLength=1
+	// +required
+	Name string `json:"name"`
+}
+
 // IPAddress is an IPv4 or IPv6 address with CIDR notation.
 // +kubebuilder:validation:MaxLength=64
 type IPAddress string
 
+// VPCAttachmentInterfaceMode is how the workload consumes the interface. It
+// describes the guest, not the data plane, so a change of implementation on the
+// data plane side does not move this API.
+// +kubebuilder:validation:Enum=Netns;Hypervisor
+type VPCAttachmentInterfaceMode string
+
+const (
+	// VPCAttachmentInterfaceModeNetns moves the interface into the workload's
+	// network namespace, which is what a container consumes.
+	VPCAttachmentInterfaceModeNetns VPCAttachmentInterfaceMode = "Netns"
+
+	// VPCAttachmentInterfaceModeHypervisor hands the interface to a hypervisor as
+	// a device, which is what a virtual machine guest consumes.
+	VPCAttachmentInterfaceModeHypervisor VPCAttachmentInterfaceMode = "Hypervisor"
+)
+
 // VPCAttachmentInterface defines the network interface details.
 //
-// +kubebuilder:validation:XValidation:rule="self.addresses.all(a, isCIDR(a))",message="each address must be a valid IPv4 or IPv6 CIDR"
+// +kubebuilder:validation:XValidation:rule="!has(self.addresses) || self.addresses.all(a, isCIDR(a))",message="each address must be a valid IPv4 or IPv6 CIDR"
 type VPCAttachmentInterface struct {
 	// Name of the interface (e.g., eth0).
 	// +required
 	// +default:value="eth0"
 	Name string `json:"name"`
 
-	// A list of IPv4 or IPv6 addresses associated with the interface.
-	// +kubebuilder:validation:MinItems=1
+	// Mode is how the workload consumes the interface, resolved and written by
+	// the attachment controller rather than by whoever runs the workload.
+	// +kubebuilder:default=Netns
+	// +optional
+	Mode VPCAttachmentInterfaceMode `json:"mode,omitempty"`
+
+	// A list of IPv4 or IPv6 addresses associated with the interface. Empty when
+	// the guest manages its own addressing.
 	// +kubebuilder:validation:MaxItems=16
-	// +required
-	Addresses []IPAddress `json:"addresses"`
+	// +optional
+	Addresses []IPAddress `json:"addresses,omitempty"`
 }
 
 // VPCAttachmentStatus defines the observed state of VPCAttachment.
+//
+// Every field but Conditions is optional: an identifier is recorded before a pod
+// attaches, and a guest managing its own addressing never reports a subnet.
 type VPCAttachmentStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
@@ -76,44 +121,57 @@ type VPCAttachmentStatus struct {
 	// Base62-encoded VPC identifier.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=16
-	VPC string `json:"vpc"`
+	// +optional
+	VPC string `json:"vpc,omitempty"`
 
 	// Base62-encoded VPCAttachment identifier.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=16
-	VPCAttachment string `json:"vpcAttachment"`
+	// +optional
+	VPCAttachment string `json:"vpcAttachment,omitempty"`
 
 	// Kubernetes node name where the attachment lives.
 	// +kubebuilder:validation:MinLength=1
-	Node string `json:"node"`
+	// +optional
+	Node string `json:"node,omitempty"`
 
 	// Full container ID (46 hex characters).
 	// +kubebuilder:validation:MinLength=46
 	// +kubebuilder:validation:MaxLength=46
-	ContainerID string `json:"containerID"`
+	// +optional
+	ContainerID string `json:"containerID,omitempty"`
 
 	// Pod name.
 	// +kubebuilder:validation:MinLength=1
-	PodName string `json:"podName"`
+	// +optional
+	PodName string `json:"podName,omitempty"`
 
-	// Host-side veth device name (e.g., "G000000010010H").
+	// Host-side veth or tap device name (e.g., "G000000010013H").
 	// +kubebuilder:validation:MinLength=1
-	HostInterface string `json:"hostInterface"`
+	// +optional
+	HostInterface string `json:"hostInterface,omitempty"`
 
-	// VRF device name (e.g., "G000000010010V").
+	// VRF device name, which is per-VPC (e.g., "G000000010V").
 	// +kubebuilder:validation:MinLength=1
-	VRFInterface string `json:"vrfInterface"`
+	// +optional
+	VRFInterface string `json:"vrfInterface,omitempty"`
 
-	// Guest-side veth device name (e.g., "G000000010010G").
+	// Guest-side veth device name (e.g., "G000000010013G").
 	// +kubebuilder:validation:MinLength=1
 	// +optional
 	GuestInterface string `json:"guestInterface,omitempty"`
 
-	// Allocated /80 subnet in CIDR notation (e.g., "fd00:10:ff01:0:1::/80").
+	// Allocated subnet in CIDR notation (e.g., "fd00:10:ff01:0:1::/80").
 	// +kubebuilder:validation:MinLength=1
+	// +optional
 	//
 	// +kubebuilder:validation:XValidation:rule="isCIDR(self)",message="podSubnet must be a valid IPv6 CIDR"
-	PodSubnet string `json:"podSubnet"`
+	PodSubnet string `json:"podSubnet,omitempty"`
+
+	// NetworkAttachmentDefinition rendered for this attachment.
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	NetworkAttachmentDefinition string `json:"networkAttachmentDefinition,omitempty"`
 }
 
 // +kubebuilder:object:root=true

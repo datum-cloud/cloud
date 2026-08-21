@@ -43,27 +43,45 @@ spec:
                 description: Interface defines the network interface configuration.
                 properties:
                   addresses:
-                    description: A list of IPv4 or IPv6 addresses associated with
-                      the interface.
+                    description: |-
+                      A list of IPv4 or IPv6 addresses associated with the interface. Empty when
+                      the guest manages its own addressing.
                     items:
                       description: IPAddress is an IPv4 or IPv6 address with CIDR
                         notation.
                       maxLength: 64
                       type: string
                     maxItems: 16
-                    minItems: 1
                     type: array
+                  mode:
+                    default: Netns
+                    description: |-
+                      Mode is how the workload consumes the interface, resolved and written by
+                      the attachment controller rather than by whoever runs the workload.
+                    enum:
+                    - Netns
+                    - Hypervisor
+                    type: string
                   name:
                     default: eth0
                     description: Name of the interface (e.g., eth0).
                     type: string
                 required:
-                - addresses
                 - name
                 type: object
                 x-kubernetes-validations:
                 - message: each address must be a valid IPv4 or IPv6 CIDR
-                  rule: self.addresses.all(a, isCIDR(a))
+                  rule: '!has(self.addresses) || self.addresses.all(a, isCIDR(a))'
+              interfaceRef:
+                description: NetworkInterface this attachment realizes.
+                properties:
+                  name:
+                    description: Name of the NetworkInterface.
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
               vpc:
                 description: VPC this attachment belongs to.
                 properties:
@@ -78,9 +96,6 @@ spec:
             - interface
             - vpc
             type: object
-            x-kubernetes-validations:
-            - message: vpc reference is required
-              rule: has(self.vpc) && self.vpc.name != ''
           status:
             description: status defines the observed state of VPCAttachment
             properties:
@@ -149,11 +164,15 @@ spec:
                 minLength: 46
                 type: string
               guestInterface:
-                description: Guest-side veth device name (e.g., "G000000010010G").
+                description: Guest-side veth device name (e.g., "G000000010013G").
                 minLength: 1
                 type: string
               hostInterface:
-                description: Host-side veth device name (e.g., "G000000010010H").
+                description: Host-side veth or tap device name (e.g., "G000000010013H").
+                minLength: 1
+                type: string
+              networkAttachmentDefinition:
+                description: NetworkAttachmentDefinition rendered for this attachment.
                 minLength: 1
                 type: string
               node:
@@ -168,7 +187,7 @@ spec:
                 minLength: 1
                 type: string
               podSubnet:
-                description: Allocated /80 subnet in CIDR notation (e.g., "fd00:10:ff01:0:1::/80").
+                description: Allocated subnet in CIDR notation (e.g., "fd00:10:ff01:0:1::/80").
                 minLength: 1
                 type: string
                 x-kubernetes-validations:
@@ -185,18 +204,9 @@ spec:
                 minLength: 1
                 type: string
               vrfInterface:
-                description: VRF device name (e.g., "G000000010010V").
+                description: VRF device name, which is per-VPC (e.g., "G000000010V").
                 minLength: 1
                 type: string
-            required:
-            - containerID
-            - hostInterface
-            - node
-            - podName
-            - podSubnet
-            - vpc
-            - vpcAttachment
-            - vrfInterface
             type: object
         required:
         - spec
