@@ -4,7 +4,7 @@ This file provides guidance to AI assistants when working with code in this repo
 
 ## What this project is
 
-Cloud defines Kubernetes CRDs and API types for virtual networking. It is **API-only** — no controllers, no binaries, no runtime. Implementations consume these APIs; this repo just defines the contract.
+Cloud defines Kubernetes CRDs and API types for virtual networking, and ships `vpc-controller` (`cmd/main.go`), which reconciles them in a POP cell against the galactic data plane. API types live in `api/v1alpha1/`; controller code lives in `internal/`.
 
 Module: `go.datum.net/cloud`
 

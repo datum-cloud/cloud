@@ -1,6 +1,6 @@
 # Services
 
-Kubernetes CRDs for virtual networking — API-only, no controller.
+Kubernetes CRDs for virtual networking, and the controller that reconciles them in a POP cell.
 
 **API group:** `cloud.datumapis.com/v1alpha1`
 **Stability:** Alpha
@@ -10,7 +10,13 @@ Kubernetes CRDs for virtual networking — API-only, no controller.
 
 ## What it is
 
-Services defines Kubernetes Custom Resource Definitions for virtual tenant networking. It ships type definitions, validation rules, and CRD manifests — no controller, no runtime, no binaries. External implementations import this module to register these types and reconcile the resources.
+Services defines Kubernetes Custom Resource Definitions for virtual tenant networking, plus `vpc-controller`, which realizes them against the galactic data plane.
+
+The controller runs in a POP cell beside network-services-operator, compute and the workload providers. It turns a `NetworkContext` into a `VPC` identity; when a `NetworkInterface` claim is fulfilled it creates the `VPCAttachment` and the `NetworkAttachmentDefinition`, allocates the attachment identifier, and publishes the annotations a workload must carry; and it projects what the data plane reported back onto `VPCAttachment` and `NetworkInterface` status.
+
+It also serves a mutating admission webhook that injects the Multus annotation into Pods labelled `networking.datumapis.com/inject-interfaces: "true"`, so Multus knowledge stays inside the one component that writes NetworkAttachmentDefinitions.
+
+It requires `--attachment-mode` (`Netns` or `Hypervisor`) — how guests in the cell consume an interface. There is no default, because defaulting would hand a microVM an interface it cannot use.
 
 ## Resources
 
@@ -50,7 +56,8 @@ spec:
 ## Quick start
 
 ```bash
-kubectl apply -k config/crd
+kubectl apply -k config/crd      # types only
+kubectl apply -k config/default  # types, RBAC and the controller
 ```
 
 ## Development

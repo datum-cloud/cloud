@@ -1,0 +1,32 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: vpc-controller-pod-interfaces
+  annotations:
+    cert-manager.io/inject-ca-from: vpc-system/serving-cert
+webhooks:
+  - name: pod-interfaces.cloud.datumapis.com
+    admissionReviewVersions:
+      - v1
+    sideEffects: None
+    # Fail is safe only because objectSelector narrows this to Pods that opted
+    # in: an outage blocks exactly those, loudly, instead of every Pod in the
+    # cell — and never lets one come up silently unattached.
+    failurePolicy: Fail
+    objectSelector:
+      matchLabels:
+        networking.datumapis.com/inject-interfaces: "true"
+    clientConfig:
+      service:
+        name: vpc-controller-webhook
+        namespace: vpc-system
+        path: /mutate-v1-pod
+    rules:
+      - apiGroups:
+          - ""
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+        resources:
+          - pods
