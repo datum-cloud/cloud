@@ -1,0 +1,40 @@
+name: Publish
+
+on:
+  push:
+  release:
+    types: ["published"]
+
+jobs:
+  validate-kustomize:
+    uses: datum-cloud/actions/.github/workflows/validate-kustomize.yaml@v1.21.0
+
+  publish-container-image:
+    needs:
+      - validate-kustomize
+    permissions:
+      id-token: write
+      contents: read
+      packages: write
+      attestations: write
+    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.21.0
+    with:
+      image-name: vpc-controller
+      platforms: linux/amd64,linux/arm64
+    secrets: inherit
+
+  # The bundle pins the image to this build, so it publishes after the image.
+  publish-kustomize-bundles:
+    needs:
+      - publish-container-image
+    permissions:
+      id-token: write
+      contents: read
+      packages: write
+    uses: datum-cloud/actions/.github/workflows/publish-kustomize-bundle.yaml@v1.21.0
+    with:
+      bundle-name: ghcr.io/datum-cloud/vpc-controller-kustomize
+      bundle-path: config
+      image-name: ghcr.io/datum-cloud/vpc-controller
+      image-overlays: config/manager
+    secrets: inherit
