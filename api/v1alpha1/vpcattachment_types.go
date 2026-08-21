@@ -61,13 +61,6 @@ type NetworkInterfaceRef struct {
 	// +kubebuilder:validation:MinLength=1
 	// +required
 	Name string `json:"name"`
-
-	// UID of the NetworkInterface. When set, a controller that finds a different
-	// UID must treat the attachment as stale rather than bind to the new interface.
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=64
-	// +optional
-	UID string `json:"uid,omitempty"`
 }
 
 // IPAddress is an IPv4 or IPv6 address with CIDR notation.

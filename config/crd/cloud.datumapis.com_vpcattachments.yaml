@@ -79,13 +79,6 @@ spec:
                     description: Name of the NetworkInterface.
                     minLength: 1
                     type: string
-                  uid:
-                    description: |-
-                      UID of the NetworkInterface. When set, a controller that finds a different
-                      UID must treat the attachment as stale rather than bind to the new interface.
-                    maxLength: 64
-                    minLength: 1
-                    type: string
                 required:
                 - name
                 type: object

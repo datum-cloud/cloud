@@ -57,7 +57,6 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `name` _string_ | Name of the NetworkInterface. |  | MinLength: 1 <br /> |
-| `uid` _string_ | UID of the NetworkInterface. When set, a controller that finds a different<br />UID must treat the attachment as stale rather than bind to the new interface. |  | MaxLength: 64 <br />MinLength: 1 <br /> |
 
 
 #### VPC
