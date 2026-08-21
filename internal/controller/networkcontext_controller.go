@@ -118,14 +118,28 @@ func (r *NetworkContextReconciler) networksForContext(
 		if subnet.Spec.NetworkContext.Name != networkContext.Name {
 			continue
 		}
-		if subnet.Status.StartAddress == nil || subnet.Status.PrefixLength == nil {
+		start, prefixLength, ok := subnetRange(&subnet)
+		if !ok {
 			continue
 		}
 		networks = append(networks, cloudv1alpha1.Network(
-			fmt.Sprintf("%s/%d", *subnet.Status.StartAddress, *subnet.Status.PrefixLength)))
+			fmt.Sprintf("%s/%d", start, prefixLength)))
 	}
 	slices.Sort(networks)
 	return networks, nil
+}
+
+// subnetRange reads a subnet's allocated range, preferring status and falling
+// back to spec. A location's copy arrives by propagation, which carries spec
+// and never status.
+func subnetRange(subnet *networkingv1alpha.Subnet) (string, int32, bool) {
+	if subnet.Status.StartAddress != nil && subnet.Status.PrefixLength != nil {
+		return *subnet.Status.StartAddress, *subnet.Status.PrefixLength, true
+	}
+	if subnet.Spec.StartAddress != "" && subnet.Spec.PrefixLength != 0 {
+		return subnet.Spec.StartAddress, subnet.Spec.PrefixLength, true
+	}
+	return "", 0, false
 }
 
 // allocateVPCIdentifier draws a random 48-bit identifier not already in use.
