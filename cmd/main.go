@@ -137,7 +137,10 @@ func main() {
 		setupLog.Error(err, "unable to set up health check")
 		os.Exit(1)
 	}
-	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+	// Gate readiness on the webhook server: with failurePolicy Fail, a Pod that
+	// reports Ready before the webhook serves would take endpoints and reject
+	// every labelled Pod in the cell.
+	if err := mgr.AddReadyzCheck("webhook", mgr.GetWebhookServer().StartedChecker()); err != nil {
 		setupLog.Error(err, "unable to set up ready check")
 		os.Exit(1)
 	}

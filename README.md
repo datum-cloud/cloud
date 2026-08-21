@@ -60,6 +60,13 @@ kubectl apply -k config/crd      # types only
 kubectl apply -k config/default  # types, RBAC and the controller
 ```
 
+`config/default` requires cert-manager: it issues the webhook serving certificate and injects the CA into the `MutatingWebhookConfiguration`. The attachment mode is carried as the `ATTACHMENT_MODE` environment variable on the manager container (default `Hypervisor`), so a cell selects its mode with a small overlay patch rather than rewriting the args list.
+
+CI publishes on every push and release:
+
+- image: `ghcr.io/datum-cloud/vpc-controller`
+- kustomize bundle (OCI, for Flux `OCIRepository`): `ghcr.io/datum-cloud/vpc-controller-kustomize`, with the image pinned to the matching tag
+
 ## Development
 
 ```bash
