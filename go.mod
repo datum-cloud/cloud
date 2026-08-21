@@ -5,7 +5,7 @@ go 1.26.4
 require (
 	github.com/k8snetworkplumbingwg/network-attachment-definition-client v1.7.7
 	github.com/kenshaw/baseconv v0.1.1
-	go.datum.net/compute v0.8.0-dev.7.0.20260820234500-4fc9371c0316
+	go.datum.net/compute v0.8.0-dev.7.0.20260821003916-1a0e4d6443f0
 	go.datum.net/network v0.0.0-20260819160013-45d0ff9deaee
 	go.datum.net/network-services-operator v0.26.1-0.20260820201844-f366b960529b
 	k8s.io/api v0.36.3
