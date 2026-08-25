@@ -54,6 +54,11 @@ const (
 	// MultusNetworksAnnotation is what Multus resolves at sandbox creation.
 	MultusNetworksAnnotation = "k8s.v1.cni.cncf.io/networks"
 
+	// MultusDefaultNetworkAnnotation displaces the cluster's default network for
+	// this Pod, so the instance's first interface carries its traffic rather than
+	// whatever CNI the cluster installs by default.
+	MultusDefaultNetworkAnnotation = "v1.multus-cni.io/default-network"
+
 	// WebhookPath is the path the mutating webhook configuration points at.
 	WebhookPath = "/mutate-v1-pod"
 
@@ -108,6 +113,7 @@ func (i *PodInterfaceInjector) Handle(ctx context.Context, req admission.Request
 		pod.Annotations = map[string]string{}
 	}
 	pod.Annotations[MultusNetworksAnnotation] = mergeNetworks(pod.Annotations[MultusNetworksAnnotation], networks)
+	pod.Annotations[MultusDefaultNetworkAnnotation] = networks[0]
 	pod.Annotations[InjectedInterfacesAnnotation] = strings.Join(injected, ",")
 
 	patched, err := json.Marshal(pod)
@@ -115,7 +121,9 @@ func (i *PodInterfaceInjector) Handle(ctx context.Context, req admission.Request
 		return admission.Errored(http.StatusInternalServerError, err)
 	}
 	ctrl.LoggerFrom(ctx).Info("injected network interfaces into pod",
-		"instance", instanceName, "interfaces", injected, "networks", pod.Annotations[MultusNetworksAnnotation])
+		"instance", instanceName, "interfaces", injected,
+		"networks", pod.Annotations[MultusNetworksAnnotation],
+		"defaultNetwork", pod.Annotations[MultusDefaultNetworkAnnotation])
 	return admission.PatchResponseFromRaw(req.Object.Raw, patched)
 }
 
