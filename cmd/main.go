@@ -112,7 +112,7 @@ func main() {
 	}
 
 	if err := (&controller.NetworkContextReconciler{
-		Client: mgr.GetClient(), Scheme: mgr.GetScheme(),
+		Client: mgr.GetClient(), Scheme: mgr.GetScheme(), APIReader: mgr.GetAPIReader(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "NetworkContext")
 		os.Exit(1)

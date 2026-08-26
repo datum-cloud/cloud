@@ -25,6 +25,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -40,7 +41,8 @@ import (
 // identifier the whole galactic fabric keys on.
 type NetworkContextReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme    *runtime.Scheme
+	APIReader client.Reader
 }
 
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkcontexts,verbs=get;list;watch
@@ -83,7 +85,7 @@ func (r *NetworkContextReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	if vpc.Status.VPC == "" {
-		allocated, err := r.allocateVPCIdentifier(ctx)
+		allocated, err := r.vpcIdentifier(ctx, &networkContext)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
@@ -140,6 +142,76 @@ func subnetRange(subnet *networkingv1alpha.Subnet) (string, int32, bool) {
 		return subnet.Spec.StartAddress, subnet.Spec.PrefixLength, true
 	}
 	return "", 0, false
+}
+
+// vpcIdentifier resolves the identifier for a VPC that does not have one yet.
+// A network whose fabric identity has been allocated for it derives its
+// identifier from that value, so every location holding the same network
+// arrives at the same one. A network with no allocated identity keeps the
+// original behaviour and draws a random identifier for this cell.
+func (r *NetworkContextReconciler) vpcIdentifier(
+	ctx context.Context, networkContext *networkingv1alpha.NetworkContext,
+) (string, error) {
+	fabricIdentity, err := r.fabricIdentity(ctx, networkContext)
+	if err != nil {
+		return "", err
+	}
+	if fabricIdentity == 0 {
+		return r.allocateVPCIdentifier(ctx)
+	}
+	return vpcIdentifierFor(fabricIdentity)
+}
+
+// vpcIdentifierFor renders an allocated fabric identity as the base62 VPC
+// identifier the galactic data plane keys on. The rendering is total and
+// deterministic: the same identity yields the same identifier in every cell.
+func vpcIdentifierFor(fabricIdentity int64) (string, error) {
+	if fabricIdentity < 0 {
+		return "", fmt.Errorf("fabric identity %d is negative", fabricIdentity)
+	}
+	rendered, err := identifier.VPCBase62(uint64(fabricIdentity))
+	if err != nil {
+		return "", fmt.Errorf("render fabric identity %d: %w", fabricIdentity, err)
+	}
+	return rendered, nil
+}
+
+// fabricIdentity reads the identity allocated for the network this context
+// belongs to, or zero when none has been allocated.
+//
+// The field is read untyped because the Go type in the pinned
+// network-services-operator release does not carry it yet, and a typed client
+// discards fields its struct does not know: the value would read as absent
+// every time. Reading it directly means this cell picks the identity up as
+// soon as it is published, with no release ordering between the two repos.
+// Once a release carrying the field is pinned, this collapses to a field read.
+func (r *NetworkContextReconciler) fabricIdentity(
+	ctx context.Context, networkContext *networkingv1alpha.NetworkContext,
+) (int64, error) {
+	reader := r.APIReader
+	if reader == nil {
+		reader = r.Client
+	}
+
+	raw := &unstructured.Unstructured{}
+	raw.SetGroupVersionKind(networkingv1alpha.GroupVersion.WithKind("NetworkContext"))
+	if err := reader.Get(ctx, client.ObjectKeyFromObject(networkContext), raw); err != nil {
+		return 0, fmt.Errorf("read NetworkContext %s: %w", networkContext.Name, err)
+	}
+	return fabricIdentityFrom(raw.Object)
+}
+
+// fabricIdentityFrom extracts spec.fabricIdentity from an untyped
+// NetworkContext, treating an absent field as no allocated identity.
+func fabricIdentityFrom(object map[string]any) (int64, error) {
+	value, found, err := unstructured.NestedInt64(object, "spec", "fabricIdentity")
+	if err != nil {
+		return 0, fmt.Errorf("read spec.fabricIdentity: %w", err)
+	}
+	if !found {
+		return 0, nil
+	}
+	return value, nil
 }
 
 // allocateVPCIdentifier draws a random 48-bit identifier not already in use.

@@ -80,6 +80,17 @@ func Base62ToHex(value string) (string, error) {
 	return baseconv.Convert(value, baseconv.Digits62, baseconv.DigitsHex)
 }
 
+// VPCBase62 renders a specific 48-bit VPC identifier in base62. Callers that
+// hold an identifier allocated elsewhere use this instead of drawing a random
+// one, so every cell rendering the same value produces the same identifier.
+func VPCBase62(value uint64) (string, error) {
+	hex, err := Hex(value, MaxVPC)
+	if err != nil {
+		return "", err
+	}
+	return HexToBase62(hex)
+}
+
 // RandomVPCBase62 returns a random VPC identifier in base62.
 func RandomVPCBase62() (string, error) {
 	hex, err := RandomVPC()
