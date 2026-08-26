@@ -24,7 +24,10 @@ import (
 
 func TestConflistChainIsComplete(t *testing.T) {
 	conflist := Conflist("web-eth0", PluginTap, "0000000jU", "01a", 1400,
-		[]string{"fd00:10:ff01:0:1::1/96", "172.20.1.7/32"})
+		[]Address{
+			{Address: "fd00:10:ff01:0:1::1/96", Gateway: "fd00:10:ff01::1"},
+			{Address: "172.20.1.7/32", Gateway: "172.20.1.1"},
+		})
 
 	if conflist.CNIVersion != "1.0.0" {
 		t.Errorf("cniVersion: got %q, want %q", conflist.CNIVersion, "1.0.0")
@@ -42,6 +45,12 @@ func TestConflistChainIsComplete(t *testing.T) {
 	}
 	if master.IPAM == nil || len(master.IPAM.Addresses) != 2 {
 		t.Fatalf("ipam addresses: got %v, want two entries", master.IPAM)
+	}
+	// Without the gateway the guest has an address it cannot route off.
+	for _, address := range master.IPAM.Addresses {
+		if address.Gateway == "" {
+			t.Errorf("address %q carries no gateway", address.Address)
+		}
 	}
 
 	// The master plugin fails ADD before creating kernel state without this.

@@ -101,15 +101,19 @@ type IPAM struct {
 	Addresses []Address `json:"addresses,omitempty"`
 }
 
-// Address is one pre-decided address, in CIDR notation.
+// Address is one pre-decided address, in CIDR notation, with the next hop the
+// interface routes through for its family. Without the gateway the guest has an
+// address but no route off its own link, and the host installs neither the tap
+// gateway address nor the route to the attachment's prefix.
 type Address struct {
 	Address string `json:"address"`
+	Gateway string `json:"gateway,omitempty"`
 }
 
 // Conflist renders the conflist for one attachment. Addresses are the addresses
 // NSO already allocated; an empty list means the guest addresses itself and no
 // IPAM block is emitted.
-func Conflist(name, plugin, vpc, vpcAttachment string, mtu int32, addresses []string) NetConfList {
+func Conflist(name, plugin, vpc, vpcAttachment string, mtu int32, addresses []Address) NetConfList {
 	master := MasterPlugin{
 		Type:          plugin,
 		VPC:           vpc,
@@ -118,11 +122,7 @@ func Conflist(name, plugin, vpc, vpcAttachment string, mtu int32, addresses []st
 		MTU:           mtu,
 	}
 	if len(addresses) > 0 {
-		ipam := &IPAM{Type: PluginIPAM}
-		for _, address := range addresses {
-			ipam.Addresses = append(ipam.Addresses, Address{Address: address})
-		}
-		master.IPAM = ipam
+		master.IPAM = &IPAM{Type: PluginIPAM, Addresses: addresses}
 	}
 	return NetConfList{
 		CNIVersion: CNIVersion,
@@ -135,7 +135,7 @@ func Conflist(name, plugin, vpc, vpcAttachment string, mtu int32, addresses []st
 }
 
 // ConflistJSON renders the conflist as the string a NAD's spec.config holds.
-func ConflistJSON(name, plugin, vpc, vpcAttachment string, mtu int32, addresses []string) (string, error) {
+func ConflistJSON(name, plugin, vpc, vpcAttachment string, mtu int32, addresses []Address) (string, error) {
 	raw, err := json.Marshal(Conflist(name, plugin, vpc, vpcAttachment, mtu, addresses))
 	if err != nil {
 		return "", fmt.Errorf("marshal CNI conflist: %w", err)

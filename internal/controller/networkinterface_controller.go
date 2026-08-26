@@ -192,9 +192,12 @@ func (r *NetworkInterfaceReconciler) reconcileNAD(
 		attachmentID = allocated
 	}
 
-	addresses := make([]string, 0, len(networkInterface.Spec.Addresses))
+	addresses := make([]galactic.Address, 0, len(networkInterface.Spec.Addresses))
 	for _, address := range networkInterface.Spec.Addresses {
-		addresses = append(addresses, address.Address)
+		addresses = append(addresses, galactic.Address{
+			Address: address.Address,
+			Gateway: address.Gateway,
+		})
 	}
 	config, err := galactic.ConflistJSON(attachment.Name, masterPlugin(attachment.Spec.Interface.Mode),
 		vpc.Status.VPC, attachmentID, networkInterface.Spec.MTU, addresses)
