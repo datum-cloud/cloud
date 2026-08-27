@@ -149,6 +149,11 @@ func main() {
 		setupLog.Error(err, "unable to reach the federation hub")
 		os.Exit(1)
 	}
+	// A cluster carries a cache, so the manager puts it in the cache group
+	// rather than the leader election group: it starts on every replica, ahead
+	// of any election, and startup blocks until its cache has synced. That is
+	// why nothing below probes the hub for readiness. A pod cannot report ready
+	// while the hub is unreadable, because it has not finished starting.
 	if err := mgr.Add(hub); err != nil {
 		setupLog.Error(err, "unable to run the federation hub's cache")
 		os.Exit(1)
