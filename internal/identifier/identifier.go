@@ -80,6 +80,16 @@ func Base62ToHex(value string) (string, error) {
 	return baseconv.Convert(value, baseconv.Digits62, baseconv.DigitsHex)
 }
 
+// VPCBase62 renders a known VPC identifier in base62, applying the same
+// reserved-value guards and width as a drawn one.
+func VPCBase62(value uint64) (string, error) {
+	hex, err := Hex(value, MaxVPC)
+	if err != nil {
+		return "", err
+	}
+	return HexToBase62(hex)
+}
+
 // RandomVPCBase62 returns a random VPC identifier in base62.
 func RandomVPCBase62() (string, error) {
 	hex, err := RandomVPC()

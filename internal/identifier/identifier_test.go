@@ -73,3 +73,23 @@ func trimLeadingZeros(value string) string {
 	}
 	return "0"
 }
+
+func TestVPCBase62RejectsReservedValuesAndFitsItsSegment(t *testing.T) {
+	for _, value := range []uint64{0, MaxVPC, MaxVPC + 1} {
+		if _, err := VPCBase62(value); err == nil {
+			t.Errorf("VPCBase62(%d): got no error, want one", value)
+		}
+	}
+
+	// The widest fabric identity is 32 bits, well inside the 48 the VPC
+	// identifier holds, so nothing an identity carries can overflow the segment.
+	for _, value := range []uint64{1, 16, 1 << 31, 1<<32 - 1} {
+		encoded, err := VPCBase62(value)
+		if err != nil {
+			t.Fatalf("VPCBase62(%d): %v", value, err)
+		}
+		if len(encoded) > 9 {
+			t.Errorf("VPCBase62(%d) = %q exceeds nine base62 characters", value, encoded)
+		}
+	}
+}
