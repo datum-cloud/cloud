@@ -46,11 +46,12 @@ type NetworkFabricIdentitySpec struct {
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="identity is immutable"
 	Identity int64 `json:"identity"`
 
-	// NetworkRef names the network this identity belongs to. The object is
-	// named after the network and sits in the network's own namespace, so this
-	// is here to be read rather than resolved through: the UID is what tells a
-	// network deleted and recreated under the same name apart from the one that
-	// held this identity before it.
+	// NetworkRef names the network this identity belongs to.
+	//
+	// It carries a name and no UID, deliberately. The identity is a permanent
+	// property of a name in a namespace, not of one object's lifetime: a
+	// network deleted and recreated under the same name inherits it. A UID here
+	// would document the opposite of the rule.
 	//
 	// +kubebuilder:validation:Required
 	NetworkRef NetworkFabricIdentityNetworkRef `json:"networkRef"`
@@ -63,11 +64,6 @@ type NetworkFabricIdentityNetworkRef struct {
 	//
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
-
-	// UID is the network's UID.
-	//
-	// +kubebuilder:validation:Optional
-	UID string `json:"uid,omitempty"`
 }
 
 // +kubebuilder:object:root=true

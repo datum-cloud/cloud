@@ -92,7 +92,6 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the network's name. |  | Required: \{\} <br /> |
-| `uid` _string_ | UID is the network's UID. |  | Optional: \{\} <br /> |
 
 
 #### NetworkFabricIdentitySpec
@@ -110,7 +109,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `identity` _integer_ | Identity is what the fabric knows the network by, the same in every<br />location the network reaches. The Route Target is derived from it, which<br />is what makes two locations of one network import each other's routes<br />rather than behave as two networks that share a name. The VRF device is<br />named from it for the same reason.<br />It is an integer rather than an encoded string because a consumer builds<br />`ASN:<identity>` from it and encodes it for its own use. It is 32 bits<br />wide because that is what survives into the Route Target: the fabric<br />truncates, so a wider value would be uniqueness the platform believes it<br />has and the fabric does not.<br />It is never zero and never changes. The fabric embeds it in import policy<br />in every location the network reaches, so a network that changed identity<br />would be a different network to everything already carrying its traffic. |  | Maximum: 4.294967295e+09 <br />Minimum: 1 <br />Required: \{\} <br /> |
-| `networkRef` _[NetworkFabricIdentityNetworkRef](#networkfabricidentitynetworkref)_ | NetworkRef names the network this identity belongs to. The object is<br />named after the network and sits in the network's own namespace, so this<br />is here to be read rather than resolved through: the UID is what tells a<br />network deleted and recreated under the same name apart from the one that<br />held this identity before it. |  | Required: \{\} <br /> |
+| `networkRef` _[NetworkFabricIdentityNetworkRef](#networkfabricidentitynetworkref)_ | NetworkRef names the network this identity belongs to.<br />It carries a name and no UID, deliberately. The identity is a permanent<br />property of a name in a namespace, not of one object's lifetime: a<br />network deleted and recreated under the same name inherits it. A UID here<br />would document the opposite of the rule. |  | Required: \{\} <br /> |
 
 
 #### NetworkInterfaceRef

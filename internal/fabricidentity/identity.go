@@ -30,11 +30,14 @@ package fabricidentity
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"net/netip"
 
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
+	"go.miloapis.com/ipam/pkg/ipamerrors"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -64,16 +67,44 @@ type Request struct {
 	// written to.
 	Namespace string
 
-	// NetworkUID names the network. The claim is named from it, so a reconcile
-	// that lost its answer finds the same block again instead of taking a
-	// second one, and a network deleted and recreated under the same name is a
-	// different network with a different identity.
-	NetworkUID string
+	// NetworkNamespace and NetworkName identify the network the identity is
+	// for. The claim is named from the pair, so an identity is a permanent
+	// property of that name in that namespace.
+	//
+	// A network deleted and recreated under the same name in the same namespace
+	// therefore inherits the identity it had before. That is deliberate: the
+	// alternative is releasing identifiers back to the pool, where the
+	// allocator could hand one to any network at all. A Route Target still
+	// installed in a remote location's import policy would then merge an
+	// unrelated network into a dead one's routes. Inheritance is confined to
+	// one namespace and one name; reissue is not confined to anything.
+	NetworkNamespace string
+	NetworkName      string
 }
 
+// maxClaimNameLength is the ceiling on an object name in Kubernetes, which is
+// all an IPClaim name is.
+const maxClaimNameLength = 253
+
 // ClaimName is the name the request's claim is held under.
-func ClaimName(networkUID string) string {
-	return "fabric-identity-" + networkUID
+//
+// The delimiter is a dot rather than a dash because a namespace is a DNS label
+// and cannot contain one, so the first dot after the prefix always ends the
+// namespace. A dash would be ambiguous: namespace "a-b" with name "c" and
+// namespace "a" with name "b-c" would collide.
+//
+// Uniqueness rests on the API server refusing a namespace containing a dot. A
+// network name may contain one, and that is fine: the split is taken at the
+// first dot, which is always the namespace boundary.
+func ClaimName(networkNamespace, networkName string) string {
+	name := fmt.Sprintf("fabric-identity.%s.%s", networkNamespace, networkName)
+	if len(name) <= maxClaimNameLength {
+		return name
+	}
+
+	sum := sha256.Sum256([]byte(networkNamespace + "/" + networkName))
+	suffix := "." + hex.EncodeToString(sum[:])[:16]
+	return name[:maxClaimNameLength-len(suffix)] + suffix
 }
 
 // Claim holds one block of the identifier space and reads the identity out of
@@ -85,7 +116,7 @@ func ClaimName(networkUID string) string {
 func Claim(ctx context.Context, ipamClient client.Client, request Request) (int64, error) {
 	ipClaim := &ipamv1alpha1.IPClaim{}
 	ipClaim.Namespace = request.Namespace
-	ipClaim.Name = ClaimName(request.NetworkUID)
+	ipClaim.Name = ClaimName(request.NetworkNamespace, request.NetworkName)
 	ipClaim.Spec = ipamv1alpha1.IPClaimSpec{
 		ClassName:    request.ClassName,
 		Target:       ipamv1alpha1.TargetBlock,
@@ -107,6 +138,13 @@ func Claim(ctx context.Context, ipamClient client.Client, request Request) (int6
 	if getErr == nil {
 		ipClaim = existing
 	} else if createErr := ipamClient.Create(ctx, ipClaim); createErr != nil {
+		// An allocation retained by an earlier claim of this name is this
+		// network's own identity, kept precisely so it could not be handed to
+		// another network. Adopt it rather than treating it as a failure.
+		if allocationName, retained := ipamerrors.RetainedAllocation(createErr); retained {
+			return adopt(ctx, ipamClient, request.Namespace, allocationName)
+		}
+
 		// The create can still lose a race with another writer, so ask again
 		// before calling this a failure to allocate.
 		raced := &ipamv1alpha1.IPClaim{}
@@ -121,6 +159,21 @@ func Claim(ctx context.Context, ipamClient client.Client, request Request) (int6
 	}
 
 	return FromBlock(ipClaim.Status.AllocatedCIDR)
+}
+
+// adopt reads the identity out of an allocation this network already holds.
+// The allocation outlives the claim that made it, which is what retention is
+// for, so the block it names is the same one this network has always had.
+func adopt(ctx context.Context, ipamClient client.Client, namespace, allocationName string) (int64, error) {
+	allocation := &ipamv1alpha1.IPAllocation{}
+	if err := ipamClient.Get(ctx,
+		client.ObjectKey{Namespace: namespace, Name: allocationName}, allocation); err != nil {
+		return 0, fmt.Errorf("read the retained allocation %q: %w", allocationName, err)
+	}
+	if allocation.Status.AllocatedCIDR == "" {
+		return 0, fmt.Errorf("the retained allocation %q holds no block", allocationName)
+	}
+	return FromBlock(allocation.Status.AllocatedCIDR)
 }
 
 // FromBlock reads the identity out of the block the identifier space handed

@@ -120,25 +120,15 @@ func (r *NetworkFabricIdentityReconciler) Reconcile(ctx context.Context, req ctr
 	// network that may no longer exist.
 	//
 	// This is safe to undo. The IPAM claim is retained and named from the
-	// network's UID, so a network that comes back to a location is republished
-	// with the identity it always had, never a new one.
+	// network's namespace and name, so a network that comes back to a location
+	// is republished with the identity it always had, never a new one.
 	if len(presences) == 0 {
 		return ctrl.Result{}, r.collect(ctx, req.Namespace, req.Name)
 	}
 
-	networkUID := networkUIDFrom(presences)
-	if networkUID == "" {
-		// Without a UID the claim cannot be named, and naming it from the
-		// network's name would hand a new network the retained allocation of a
-		// dead one of the same name.
-		log.FromContext(ctx).Info("not allocating a fabric identity for a network whose presences do not identify it",
-			"namespace", req.Namespace, "network", req.Name)
-		return ctrl.Result{}, nil
-	}
-
 	locations := locationsFrom(presences)
 
-	if err := r.publish(ctx, req.Namespace, req.Name, networkUID, locations); err != nil {
+	if err := r.publish(ctx, req.Namespace, req.Name, locations); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -170,17 +160,6 @@ func (r *NetworkFabricIdentityReconciler) presences(
 	return matching, nil
 }
 
-// networkUIDFrom reads the network's identity out of its presences. NSO
-// projects it; until every context carries it, one that does is enough.
-func networkUIDFrom(presences []networkingv1alpha.NetworkContext) string {
-	for i := range presences {
-		if uid := presences[i].Labels[networkingv1alpha.NetworkUIDLabel]; uid != "" {
-			return uid
-		}
-	}
-	return ""
-}
-
 func locationsFrom(presences []networkingv1alpha.NetworkContext) []string {
 	seen := map[string]struct{}{}
 	locations := make([]string, 0, len(presences))
@@ -205,7 +184,6 @@ func (r *NetworkFabricIdentityReconciler) publish(
 	ctx context.Context,
 	namespace string,
 	networkName string,
-	networkUID string,
 	locations []string,
 ) error {
 	key := client.ObjectKey{Namespace: namespace, Name: networkName}
@@ -217,8 +195,8 @@ func (r *NetworkFabricIdentityReconciler) publish(
 	}
 
 	identity := published.Spec.Identity
-	if identity == 0 || published.Spec.NetworkRef.UID != networkUID {
-		identity, err = r.claim(ctx, networkName, networkUID)
+	if identity == 0 {
+		identity, err = r.claim(ctx, namespace, networkName)
 		if err != nil {
 			return err
 		}
@@ -235,10 +213,7 @@ func (r *NetworkFabricIdentityReconciler) publish(
 		if object.Spec.Identity == 0 {
 			object.Spec.Identity = identity
 		}
-		object.Spec.NetworkRef = cloudv1alpha1.NetworkFabricIdentityNetworkRef{
-			Name: networkName,
-			UID:  networkUID,
-		}
+		object.Spec.NetworkRef = cloudv1alpha1.NetworkFabricIdentityNetworkRef{Name: networkName}
 		setLocationLabels(object, locations)
 		return nil
 	}); err != nil {
@@ -276,8 +251,8 @@ func setLocationLabels(object *cloudv1alpha1.NetworkFabricIdentity, locations []
 
 func (r *NetworkFabricIdentityReconciler) claim(
 	ctx context.Context,
+	networkNamespace string,
 	networkName string,
-	networkUID string,
 ) (int64, error) {
 	ipamClient, err := r.IPAM.ClientForPlatform()
 	if err != nil {
@@ -285,9 +260,10 @@ func (r *NetworkFabricIdentityReconciler) claim(
 	}
 
 	identity, err := fabricidentity.Claim(ctx, ipamClient, fabricidentity.Request{
-		ClassName:  r.IdentityClass,
-		Namespace:  r.IdentityNamespace,
-		NetworkUID: networkUID,
+		ClassName:        r.IdentityClass,
+		Namespace:        r.IdentityNamespace,
+		NetworkNamespace: networkNamespace,
+		NetworkName:      networkName,
 	})
 	if err != nil {
 		// An unusable answer is a wait on an operator, not on the service:

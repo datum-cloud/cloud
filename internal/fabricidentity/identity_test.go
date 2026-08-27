@@ -19,6 +19,7 @@ package fabricidentity
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -73,19 +74,45 @@ func TestFromBlockReadsTheIndexOutOfTheBlock(t *testing.T) {
 	}
 }
 
-// The claim is named from the network UID, which is what makes allocation
-// idempotent without recording anything: asking again reaches the same claim,
-// and a network recreated under the same name is a different network.
-func TestClaimNameIsDerivedFromTheNetworkUID(t *testing.T) {
-	first := ClaimName("11111111-1111-1111-1111-111111111111")
-	again := ClaimName("11111111-1111-1111-1111-111111111111")
-	other := ClaimName("22222222-2222-2222-2222-222222222222")
-
-	if first != again {
+// The claim is named from the network's namespace and name, which is what makes
+// the identity a permanent property of that pair and makes allocation idempotent
+// without recording anything of its own.
+func TestClaimNameIsStableAndCollisionFree(t *testing.T) {
+	namespace, name := "ns", "prod"
+	if ClaimName(namespace, name) != ClaimName("ns", "prod") {
 		t.Fatal("the same network must reach the same claim")
 	}
-	if first == other {
-		t.Fatal("a different network must reach a different claim")
+	if ClaimName("ns", "prod") == ClaimName("ns", "staging") {
+		t.Fatal("two networks in a namespace must reach different claims")
+	}
+	if ClaimName("a", "b") == ClaimName("b", "a") {
+		t.Fatal("namespace and name must not be interchangeable")
+	}
+
+	// A dash delimiter would collide here: both would render "...a-b-c". A
+	// namespace is a DNS label and cannot contain a dot, so the first dot after
+	// the prefix always ends it.
+	if ClaimName("a-b", "c") == ClaimName("a", "b-c") {
+		t.Fatal("the delimiter must not be ambiguous")
+	}
+
+	// A network name may contain dots; a namespace may not. Uniqueness rests on
+	// that: "ns.a" is not a namespace the API server will accept, so the pair
+	// that would collide with ("ns", "a.b") cannot exist. Asserted here so the
+	// dependency is recorded rather than assumed.
+	if strings.Contains("ns", ".") {
+		t.Fatal("a namespace is a DNS label and cannot contain a dot")
+	}
+	if ClaimName("ns", "a.b") == ClaimName("ns", "a-b") {
+		t.Fatal("two names in one namespace must reach different claims")
+	}
+
+	long := ClaimName(strings.Repeat("n", 200), strings.Repeat("p", 200))
+	if len(long) > maxClaimNameLength {
+		t.Fatalf("an over-long pair must still yield a usable name, got %d characters", len(long))
+	}
+	if long == ClaimName(strings.Repeat("n", 200), strings.Repeat("q", 200)) {
+		t.Fatal("two truncated names must still differ")
 	}
 }
 

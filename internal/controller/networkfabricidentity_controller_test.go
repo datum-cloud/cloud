@@ -25,6 +25,7 @@ import (
 	"testing"
 
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
+	"go.miloapis.com/ipam/pkg/ipamerrors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -56,7 +57,13 @@ type fakeIdentityIPAM struct {
 	next int
 	// created records every claim name the factory was asked to bind.
 	created []string
+	// retained maps an allocation name to the block it still holds after its
+	// claim was deleted under Retain. It is what makes a second claim of the
+	// same name a conflict rather than a fresh allocation.
+	retained map[string]string
 }
+
+func allocationNameFor(claimName string) string { return "alloc-" + claimName }
 
 func newFakeIdentityIPAM(t *testing.T) *fakeIdentityIPAM {
 	t.Helper()
@@ -65,7 +72,7 @@ func newFakeIdentityIPAM(t *testing.T) *fakeIdentityIPAM {
 		t.Fatalf("build the IPAM scheme: %v", err)
 	}
 
-	f := &fakeIdentityIPAM{next: 1}
+	f := &fakeIdentityIPAM{next: 1, retained: map[string]string{}}
 	f.client = fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
 		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 			ipClaim, ok := obj.(*ipamv1alpha1.IPClaim)
@@ -73,6 +80,17 @@ func newFakeIdentityIPAM(t *testing.T) *fakeIdentityIPAM {
 				return c.Create(ctx, obj, opts...)
 			}
 			f.created = append(f.created, ipClaim.Name)
+
+			// An allocation left behind by a deleted claim blocks the name it
+			// used, which is exactly what retention is for.
+			allocationName := allocationNameFor(ipClaim.Name)
+			if _, held := f.retained[allocationName]; held {
+				return ipamerrors.NewRetainedAllocation(
+					ipamv1alpha1.SchemeGroupVersion.WithResource("ipclaims").GroupResource(),
+					ipClaim.Name, allocationName,
+					"an allocation under this identity already exists, retained by an earlier claim of the same name")
+			}
+
 			index := f.next
 			f.next++
 			ipClaim.Status.Phase = ipamv1alpha1.ClaimBound
@@ -100,6 +118,28 @@ func hex16(v int) string {
 		v >>= 4
 	}
 	return out
+}
+
+// release models a claim deleted under Retain: the claim goes, the allocation
+// stays, and the block it holds becomes readable through the allocation.
+func (f *fakeIdentityIPAM) release(t *testing.T, ctx context.Context, claimName string) {
+	t.Helper()
+	var ipClaim ipamv1alpha1.IPClaim
+	if err := f.client.Get(ctx, client.ObjectKey{Namespace: "default", Name: claimName}, &ipClaim); err != nil {
+		t.Fatalf("read the claim being released: %v", err)
+	}
+
+	allocation := &ipamv1alpha1.IPAllocation{}
+	allocation.Namespace = "default"
+	allocation.Name = allocationNameFor(claimName)
+	allocation.Status.AllocatedCIDR = ipClaim.Status.AllocatedCIDR
+	if err := f.client.Create(ctx, allocation); err != nil {
+		t.Fatalf("retain the allocation: %v", err)
+	}
+	if err := f.client.Delete(ctx, &ipClaim); err != nil {
+		t.Fatalf("delete the claim: %v", err)
+	}
+	f.retained[allocation.Name] = ipClaim.Status.AllocatedCIDR
 }
 
 func (f *fakeIdentityIPAM) ClientForPlatform() (client.Client, error) { return f.client, nil }
@@ -141,7 +181,6 @@ func newIdentityFixture(t *testing.T, presences ...string) *identityFixture {
 		presence := &networkingv1alpha.NetworkContext{}
 		presence.Namespace = testNamespace
 		presence.Name = testNetworkName + "-" + location
-		presence.Labels = map[string]string{networkingv1alpha.NetworkUIDLabel: testNetworkUID}
 		presence.Spec.Network = networkingv1alpha.LocalNetworkRef{Name: testNetworkName}
 		presence.Spec.Location = networkingv1alpha.LocationReference{Name: location}
 		objects = append(objects, presence)
@@ -231,10 +270,10 @@ func TestIdentityIsPublishedOnItsOwnObject(t *testing.T) {
 	if identity.Spec.Identity == 0 {
 		t.Fatal("a published identity is never zero")
 	}
-	if identity.Spec.NetworkRef.Name != testNetworkName || identity.Spec.NetworkRef.UID != testNetworkUID {
+	if identity.Spec.NetworkRef.Name != testNetworkName {
 		t.Fatalf("the identity must name the network it belongs to, got %+v", identity.Spec.NetworkRef)
 	}
-	if len(f.ipam.created) != 1 || f.ipam.created[0] != fabricidentity.ClaimName(testNetworkUID) {
+	if len(f.ipam.created) != 1 || f.ipam.created[0] != fabricidentity.ClaimName(testNamespace, testNetworkName) {
 		t.Fatalf("the identity must be claimed from the platform tenancy under the network's UID, got %v", f.ipam.created)
 	}
 }
@@ -268,9 +307,6 @@ func TestEachNetworkGetsItsOwnIdentity(t *testing.T) {
 	presence := &networkingv1alpha.NetworkContext{}
 	presence.Namespace = testNamespace
 	presence.Name = "staging-us-central-1"
-	presence.Labels = map[string]string{
-		networkingv1alpha.NetworkUIDLabel: "22222222-2222-2222-2222-222222222222",
-	}
 	presence.Spec.Network = networkingv1alpha.LocalNetworkRef{Name: "staging"}
 	presence.Spec.Location = networkingv1alpha.LocationReference{Name: "us-central-1"}
 	if err := f.networks.Create(f.ctx, presence); err != nil {
@@ -372,7 +408,6 @@ func newPresence(location string) *networkingv1alpha.NetworkContext {
 	presence := &networkingv1alpha.NetworkContext{}
 	presence.Namespace = testNamespace
 	presence.Name = testNetworkName + "-" + location
-	presence.Labels = map[string]string{networkingv1alpha.NetworkUIDLabel: testNetworkUID}
 	presence.Spec.Network = networkingv1alpha.LocalNetworkRef{Name: testNetworkName}
 	presence.Spec.Location = networkingv1alpha.LocationReference{Name: location}
 	return presence
@@ -413,7 +448,6 @@ func TestOnePolicyPerLocationCarriesEveryIdentityRequiredThere(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: testNamespace,
 			Name:      "staging-us-central-1",
-			Labels:    map[string]string{networkingv1alpha.NetworkUIDLabel: "33333333-3333-3333-3333-333333333333"},
 		},
 		Spec: networkingv1alpha.NetworkContextSpec{
 			Network:  networkingv1alpha.LocalNetworkRef{Name: "staging"},
@@ -498,4 +532,73 @@ type failingLister struct {
 
 func (failingLister) List(context.Context, client.ObjectList, ...client.ListOption) error {
 	return errors.New("the control plane is unreachable")
+}
+
+// A claim whose allocation was retained comes back through the conflict, not
+// through a fresh allocation. This is a different path from the collection
+// round trip: there the claim still existed and was read back, here the claim
+// is gone and only the retained allocation remains.
+//
+// Retention is what stops a released identifier returning to the pool, where
+// the allocator could hand it to any network at all. The cost is that a network
+// recreated under the same name in the same namespace inherits its predecessor's
+// identity, which is confined to one name in one namespace.
+func TestARetainedAllocationIsAdoptedRatherThanReallocated(t *testing.T) {
+	f := newIdentityFixture(t, "us-central-1")
+	f.reconcile()
+
+	before, ok := f.published()
+	if !ok {
+		t.Fatal("expected an identity to start from")
+	}
+
+	// The network goes: its object is collected, and its claim is released
+	// under Retain, which leaves the allocation behind.
+	claimName := fabricidentity.ClaimName(testNamespace, testNetworkName)
+	f.ipam.release(t, f.ctx, claimName)
+
+	presence := &networkingv1alpha.NetworkContext{}
+	presence.Namespace = testNamespace
+	presence.Name = testNetworkName + "-us-central-1"
+	if err := f.networks.Delete(f.ctx, presence); err != nil {
+		t.Fatalf("delete the presence: %v", err)
+	}
+	f.reconcile()
+	if _, ok := f.published(); ok {
+		t.Fatal("nothing requires the identity, so the object should be collected")
+	}
+
+	// A network of the same name comes back. The claim no longer exists, so the
+	// allocate path runs and must hit the retained allocation.
+	claimsBefore := len(f.ipam.created)
+	if err := f.networks.Create(f.ctx, newPresence("us-central-1")); err != nil {
+		t.Fatalf("declare the presence again: %v", err)
+	}
+	f.reconcile()
+
+	after, ok := f.published()
+	if !ok {
+		t.Fatal("the identity must be republished")
+	}
+	if after.Spec.Identity != before.Spec.Identity {
+		t.Fatalf("a retained allocation must be adopted, got %d where %d was held",
+			after.Spec.Identity, before.Spec.Identity)
+	}
+	if len(f.ipam.created) != claimsBefore+1 {
+		t.Fatalf("the adopt path runs through a refused create, got %d creates then %d",
+			claimsBefore, len(f.ipam.created))
+	}
+
+	// And the identity that came back is not merely the next one the pool would
+	// have handed out.
+	if next := blockForIndex(f.ipam.next); next == "" {
+		t.Fatal("unreachable")
+	}
+	fresh, err := fabricidentity.FromBlock(blockForIndex(f.ipam.next))
+	if err != nil {
+		t.Fatalf("read the next free block: %v", err)
+	}
+	if after.Spec.Identity == fresh {
+		t.Fatal("the identity must come from the retained allocation, not from a fresh one")
+	}
 }
