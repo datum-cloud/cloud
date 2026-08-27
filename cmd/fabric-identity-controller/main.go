@@ -52,7 +52,7 @@ func init() {
 
 func main() {
 	var metricsAddr, probeAddr string
-	var identityClass, identityNamespace, platformProject, ipamKubeconfig string
+	var identityClass, identityNamespace, platformProject, ipamKubeconfig, hubKubeconfig string
 	var enableLeaderElection bool
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "Address the metric endpoint binds to.")
@@ -67,6 +67,8 @@ func main() {
 		"Required. The project control plane the platform allocates its own values in. A network's identity must be unique across every consumer, so it cannot be drawn from any one of them.")
 	flag.StringVar(&ipamKubeconfig, "ipam-kubeconfig", "",
 		"Required. Path to a kubeconfig for the cluster serving the IPAM API.")
+	flag.StringVar(&hubKubeconfig, "hub-kubeconfig", "",
+		"Required. Path to a kubeconfig for the federation hub. Networks and their NetworkContexts are read there as copies published by the operator that owns them, and the identity and its placement are written there.")
 
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
@@ -88,9 +90,24 @@ func main() {
 	case ipamKubeconfig == "":
 		setupLog.Error(nil, "-ipam-kubeconfig is required")
 		os.Exit(1)
+	case hubKubeconfig == "":
+		// Nothing this component does happens anywhere else, so there is no
+		// degraded mode worth starting into.
+		setupLog.Error(nil, "-hub-kubeconfig is required")
+		os.Exit(1)
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	// The manager runs against the hub rather than the cluster it is scheduled
+	// on. Everything it reads and everything it writes is there, and the leader
+	// election that keeps one network to one identity belongs on the same plane
+	// as the writes it guards.
+	hubRestConfig, err := clientcmd.BuildConfigFromFlags("", hubKubeconfig)
+	if err != nil {
+		setupLog.Error(err, "unable to load the hub kubeconfig")
+		os.Exit(1)
+	}
+
+	mgr, err := ctrl.NewManager(hubRestConfig, ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress: probeAddr,
@@ -120,10 +137,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Networks and Hub are the same client here. They are not the same plane in
-	// production: a Network lives in its consumer's project control plane, and
-	// the identity is published where cells can be reached. Reaching every
-	// project needs a multi-cluster provider this binary does not have yet.
+	// Networks and Hub are both the hub. A Network lives in its consumer's
+	// project control plane, which this binary cannot reach, so it is read
+	// there as a copy the network operator publishes. They stay separate fields
+	// because a read failing and a write failing have to be distinguishable.
 	if err := (&controller.NetworkFabricIdentityReconciler{
 		Networks:          mgr.GetClient(),
 		Hub:               mgr.GetClient(),

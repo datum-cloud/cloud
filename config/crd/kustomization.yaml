@@ -3,3 +3,6 @@ kind: Kustomization
 resources:
   - cloud.datumapis.com_vpcs.yaml
   - cloud.datumapis.com_vpcattachments.yaml
+  # Written centrally, federated to the cells that need it, so it is installed
+  # both places.
+  - cloud.datumapis.com_networkfabricidentities.yaml

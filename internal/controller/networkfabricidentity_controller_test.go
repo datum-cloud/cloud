@@ -26,7 +26,6 @@ import (
 
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 	"go.miloapis.com/ipam/pkg/ipamerrors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -207,6 +206,55 @@ func newIdentityFixture(t *testing.T, presences ...string) *identityFixture {
 	}
 }
 
+func (f *identityFixture) deletePresence(location string) {
+	f.t.Helper()
+	if err := f.networks.Delete(f.ctx, newPresence(location)); err != nil {
+		f.t.Fatalf("delete the presence: %v", err)
+	}
+}
+
+func (f *identityFixture) deleteNetwork() {
+	f.t.Helper()
+	network := &networkingv1alpha.Network{}
+	network.Namespace = testNamespace
+	network.Name = testNetworkName
+	if err := f.networks.Delete(f.ctx, network); err != nil {
+		f.t.Fatalf("delete the network: %v", err)
+	}
+}
+
+// addNetwork declares a second network alongside the fixture's own, with a
+// presence in each location named.
+func (f *identityFixture) addNetwork(name string, locations ...string) {
+	f.t.Helper()
+	network := &networkingv1alpha.Network{}
+	network.Namespace = testNamespace
+	network.Name = name
+	if err := f.networks.Create(f.ctx, network); err != nil {
+		f.t.Fatalf("create network %q: %v", name, err)
+	}
+	for _, location := range locations {
+		presence := &networkingv1alpha.NetworkContext{}
+		presence.Namespace = testNamespace
+		presence.Name = name + "-" + location
+		presence.Spec.Network = networkingv1alpha.LocalNetworkRef{Name: name}
+		presence.Spec.Location = networkingv1alpha.LocationReference{Name: location}
+		if err := f.networks.Create(f.ctx, presence); err != nil {
+			f.t.Fatalf("declare the presence of %q in %q: %v", name, location, err)
+		}
+	}
+}
+
+func (f *identityFixture) createNetwork() {
+	f.t.Helper()
+	network := &networkingv1alpha.Network{}
+	network.Namespace = testNamespace
+	network.Name = testNetworkName
+	if err := f.networks.Create(f.ctx, network); err != nil {
+		f.t.Fatalf("create the network: %v", err)
+	}
+}
+
 func (f *identityFixture) reconcile() {
 	f.t.Helper()
 	_, err := f.reconciler.Reconcile(f.ctx, ctrl.Request{
@@ -304,14 +352,7 @@ func TestEachNetworkGetsItsOwnIdentity(t *testing.T) {
 	f.reconcile()
 	first, _ := f.published()
 
-	presence := &networkingv1alpha.NetworkContext{}
-	presence.Namespace = testNamespace
-	presence.Name = "staging-us-central-1"
-	presence.Spec.Network = networkingv1alpha.LocalNetworkRef{Name: "staging"}
-	presence.Spec.Location = networkingv1alpha.LocationReference{Name: "us-central-1"}
-	if err := f.networks.Create(f.ctx, presence); err != nil {
-		t.Fatalf("declare the second network's presence: %v", err)
-	}
+	f.addNetwork("staging", "us-central-1")
 	if _, err := f.reconciler.Reconcile(f.ctx, ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: "staging"},
 	}); err != nil {
@@ -342,31 +383,44 @@ func TestIdentityIsPlacedOnTheCellsTheNetworkIsRequiredIn(t *testing.T) {
 	}
 }
 
-// A network nothing declares a presence for needs no identity anywhere, so
-// nothing is published for it. That must not error and must not churn.
-func TestIdentityWithNoPresencesPublishesNothing(t *testing.T) {
+// A network that exists is a network with an identity, whether or not anything
+// has asked for it in a location yet. It is placed nowhere until something
+// does, so no cell carries a value it has no use for, but the value is settled
+// before the first context appears rather than while one is waiting on it.
+func TestANetworkRequiredNowhereStillHasAnIdentity(t *testing.T) {
 	f := newIdentityFixture(t)
 	f.reconcile()
 
-	if _, ok := f.published(); ok {
-		t.Fatal("nothing requires the identity, so nothing should carry it")
+	published, ok := f.published()
+	if !ok {
+		t.Fatal("a network that exists must have an identity")
 	}
-	if len(f.ipam.created) != 0 {
-		t.Fatalf("nothing should be claimed for a network required nowhere, got %v", f.ipam.created)
+	if published.Spec.Identity == 0 {
+		t.Fatal("an identity of zero reads as a network holding none")
+	}
+	if _, placed := f.placement(); placed {
+		t.Fatal("nothing requires it anywhere, so nothing should carry it")
 	}
 
-	// Again, to prove it settles rather than churning.
+	// Again, to prove it settles rather than drawing a second value.
 	f.reconcile()
-	if _, ok := f.published(); ok {
-		t.Fatal("a second pass must not publish one either")
+	again, ok := f.published()
+	if !ok {
+		t.Fatal("a second pass must not collect it")
+	}
+	if again.Spec.Identity != published.Spec.Identity {
+		t.Fatalf("the identity must not move, got %d then %d", published.Spec.Identity, again.Spec.Identity)
+	}
+	if len(f.ipam.created) != 1 {
+		t.Fatalf("exactly one claim for one network, got %v", f.ipam.created)
 	}
 }
 
-// The last presence going takes the object and its placement with it, so a
-// policy is not matched forever for a network that may no longer exist. The
-// allocation itself is retained: a Route Target still installed in a remote
-// location would merge a new network into a dead one's routes.
-func TestLastPresenceCollectsTheObjectButNotTheAllocation(t *testing.T) {
+// The last presence going withdraws the placement and nothing else. The
+// network still exists, so it keeps the identity the fabric knows it by, and
+// the next location it reaches is given that value straight away instead of
+// waiting on an allocation.
+func TestLastPresenceWithdrawsThePlacementButKeepsTheIdentity(t *testing.T) {
 	f := newIdentityFixture(t, "us-central-1")
 	f.reconcile()
 
@@ -375,20 +429,20 @@ func TestLastPresenceCollectsTheObjectButNotTheAllocation(t *testing.T) {
 		t.Fatal("expected an identity to start from")
 	}
 
-	presence := &networkingv1alpha.NetworkContext{}
-	presence.Namespace = testNamespace
-	presence.Name = testNetworkName + "-us-central-1"
-	if err := f.networks.Delete(f.ctx, presence); err != nil {
-		t.Fatalf("delete the presence: %v", err)
-	}
+	f.deletePresence("us-central-1")
 	f.reconcile()
 
-	if _, ok := f.published(); ok {
-		t.Fatal("nothing requires the identity any more, so the object should be collected")
+	kept, ok := f.published()
+	if !ok {
+		t.Fatal("the network still exists, so it must keep its identity")
+	}
+	if _, placed := f.placement(); placed {
+		t.Fatal("nothing requires it anywhere, so nothing should carry it")
+	}
+	if kept.Spec.Identity != before.Spec.Identity {
+		t.Fatalf("the identity must not move, got %d then %d", before.Spec.Identity, kept.Spec.Identity)
 	}
 
-	// The network comes back. It must come back as itself, with the identity it
-	// always had, because the claim was retained and is named from its UID.
 	if err := f.networks.Create(f.ctx, newPresence("us-central-1")); err != nil {
 		t.Fatalf("declare the presence again: %v", err)
 	}
@@ -396,12 +450,97 @@ func TestLastPresenceCollectsTheObjectButNotTheAllocation(t *testing.T) {
 
 	after, ok := f.published()
 	if !ok {
-		t.Fatal("the identity must be republished when the network is required again")
+		t.Fatal("the identity must still be there when the network is required again")
+	}
+	if after.Spec.Identity != before.Spec.Identity {
+		t.Fatalf("the same network must keep the same identity, got %d then %d",
+			before.Spec.Identity, after.Spec.Identity)
+	}
+	if len(f.ipam.created) != 1 {
+		t.Fatalf("a presence coming and going must not draw again, got %v", f.ipam.created)
+	}
+}
+
+// The network going is what collects the object. It is the one signal that
+// separates a network that is gone from one that is required nowhere right
+// now, and it is the only thing this acts on.
+//
+// The allocation itself is retained: a Route Target still installed in a remote
+// location would merge a new network into a dead one's routes.
+func TestTheNetworkGoingCollectsTheObjectButNotTheAllocation(t *testing.T) {
+	f := newIdentityFixture(t, "us-central-1")
+	f.reconcile()
+
+	before, ok := f.published()
+	if !ok {
+		t.Fatal("expected an identity to start from")
+	}
+
+	f.deleteNetwork()
+	f.reconcile()
+
+	if _, ok := f.published(); ok {
+		t.Fatal("the network is gone, so the object should be collected")
+	}
+
+	// A network of the same name comes back. It must come back with the
+	// identity the name always had, because the claim was retained and is named
+	// from the network's namespace and name.
+	f.createNetwork()
+	f.reconcile()
+
+	after, ok := f.published()
+	if !ok {
+		t.Fatal("the identity must be republished when the network comes back")
 	}
 	if after.Spec.Identity != before.Spec.Identity {
 		t.Fatalf("a retained allocation must give back the same identity, got %d then %d",
 			before.Spec.Identity, after.Spec.Identity)
 	}
+}
+
+// A network that cannot be read is not a network that is gone. Nothing may be
+// collected on the strength of a failed read, because collecting takes the
+// value a live VRF is named from with it.
+func TestAnUnreadableNetworkCollectsNothing(t *testing.T) {
+	f := newIdentityFixture(t, "us-central-1")
+	f.reconcile()
+
+	before, ok := f.published()
+	if !ok {
+		t.Fatal("expected an identity to start from")
+	}
+
+	f.reconciler.Networks = failingGetter{Client: f.networks}
+	if _, err := f.reconciler.Reconcile(f.ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: testNetworkName},
+	}); err == nil {
+		t.Fatal("an unreadable network must be an error, never a collection")
+	}
+
+	f.reconciler.Networks = f.networks
+	after, ok := f.published()
+	if !ok {
+		t.Fatal("a failed read must not collect the identity")
+	}
+	if after.Spec.Identity != before.Spec.Identity {
+		t.Fatalf("the identity must be left exactly as it was, got %d then %d",
+			before.Spec.Identity, after.Spec.Identity)
+	}
+	if _, placed := f.placement(); !placed {
+		t.Fatal("a failed read must not withdraw the placement either")
+	}
+}
+
+// failingGetter stands in for a control plane that cannot answer a read of the
+// network itself. Every get is an error, which is the case a collection must
+// never mistake for "the network is gone".
+type failingGetter struct {
+	client.Client
+}
+
+func (failingGetter) Get(context.Context, client.ObjectKey, client.Object, ...client.GetOption) error {
+	return errors.New("the control plane is unreachable")
 }
 
 func newPresence(location string) *networkingv1alpha.NetworkContext {
@@ -444,18 +583,7 @@ func TestOnePolicyPerLocationCarriesEveryIdentityRequiredThere(t *testing.T) {
 
 	// A second network in the same location reuses the same policy rather than
 	// adding one.
-	if err := f.networks.Create(f.ctx, &networkingv1alpha.NetworkContext{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: testNamespace,
-			Name:      "staging-us-central-1",
-		},
-		Spec: networkingv1alpha.NetworkContextSpec{
-			Network:  networkingv1alpha.LocalNetworkRef{Name: "staging"},
-			Location: networkingv1alpha.LocationReference{Name: "us-central-1"},
-		},
-	}); err != nil {
-		t.Fatalf("declare a second network in the same location: %v", err)
-	}
+	f.addNetwork("staging", "us-central-1")
 	if _, err := f.reconciler.Reconcile(f.ctx, ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: "staging"},
 	}); err != nil {
@@ -478,12 +606,7 @@ func TestPlacementShrinksOnlyOnAnObservedDeletion(t *testing.T) {
 	f := newIdentityFixture(t, "us-central-1", "us-east-1")
 	f.reconcile()
 
-	east := &networkingv1alpha.NetworkContext{}
-	east.Namespace = testNamespace
-	east.Name = testNetworkName + "-us-east-1"
-	if err := f.networks.Delete(f.ctx, east); err != nil {
-		t.Fatalf("delete the presence: %v", err)
-	}
+	f.deletePresence("us-east-1")
 	f.reconcile()
 
 	locations, placed := f.placement()
@@ -557,23 +680,16 @@ func TestARetainedAllocationIsAdoptedRatherThanReallocated(t *testing.T) {
 	claimName := fabricidentity.ClaimName(testNamespace, testNetworkName)
 	f.ipam.release(t, f.ctx, claimName)
 
-	presence := &networkingv1alpha.NetworkContext{}
-	presence.Namespace = testNamespace
-	presence.Name = testNetworkName + "-us-central-1"
-	if err := f.networks.Delete(f.ctx, presence); err != nil {
-		t.Fatalf("delete the presence: %v", err)
-	}
+	f.deleteNetwork()
 	f.reconcile()
 	if _, ok := f.published(); ok {
-		t.Fatal("nothing requires the identity, so the object should be collected")
+		t.Fatal("the network is gone, so the object should be collected")
 	}
 
 	// A network of the same name comes back. The claim no longer exists, so the
 	// allocate path runs and must hit the retained allocation.
 	claimsBefore := len(f.ipam.created)
-	if err := f.networks.Create(f.ctx, newPresence("us-central-1")); err != nil {
-		t.Fatalf("declare the presence again: %v", err)
-	}
+	f.createNetwork()
 	f.reconcile()
 
 	after, ok := f.published()

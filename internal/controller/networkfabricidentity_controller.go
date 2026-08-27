@@ -80,12 +80,18 @@ var clusterPropagationPolicyGVK = schema.GroupVersionKind{
 // which is exactly the defect this replaces, where each location drew its own
 // value and two locations of one network were two networks on the fabric.
 type NetworkFabricIdentityReconciler struct {
-	// Networks reads the Networks identities are allocated for.
+	// Networks reads the Networks identities are allocated for, and the
+	// NetworkContexts saying where each one is required.
 	//
-	// Separate from Hub because they are not the same plane in production: a
-	// Network lives in its consumer's project control plane, and the identity
-	// is published where cells can be reached. They are the same client only in
-	// a deployment where one cluster holds both.
+	// Both arrive on the hub as copies published by the operator that owns
+	// them, because reaching every consumer's project control plane needs a
+	// multi-cluster provider this component does not have. A copy is a
+	// different object from its source and does not carry the source's UID, so
+	// nothing here reads one.
+	//
+	// Kept separate from Hub even though a deployment points both at the hub:
+	// it is what lets a failed read be exercised on its own, and every
+	// withdrawal in this controller is conditioned on a read having succeeded.
 	Networks client.Client
 
 	// Hub is where the identity and its placement are written, and from where
@@ -103,27 +109,40 @@ type NetworkFabricIdentityReconciler struct {
 	IdentityNamespace string
 }
 
-// Reconcile is keyed by a network, and reads everything it needs from that
-// network's NetworkContexts. A context is the declaration that the network is
-// required at a location, so the set of them names the network, identifies it,
-// and gives the placement all at once.
+// Reconcile is keyed by a network. The network decides whether the identity
+// exists at all; its NetworkContexts decide only where that identity is
+// carried.
+//
+// Reading the network is what separates "deleted" from "required nowhere". A
+// network that exists but has no context anywhere keeps its identity: it is a
+// network the consumer still has, and the next context to appear must find the
+// value the fabric already knows it by rather than wait for one to be drawn
+// again.
 func (r *NetworkFabricIdentityReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	presences, err := r.presences(ctx, req.Namespace, req.Name)
-	if err != nil {
-		// A list that failed says nothing about where the network is required,
-		// or whether it still exists. Changing nothing is the only safe answer.
+	network := &networkingv1alpha.Network{}
+	err := r.Networks.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: req.Name}, network)
+	switch {
+	case apierrors.IsNotFound(err):
+		// The one thing that collects an identity.
+		return ctrl.Result{}, r.collect(ctx, req.Namespace, req.Name)
+	case err != nil:
+		// A read that failed says nothing about whether the network is still
+		// there. Changing nothing is the only safe answer.
 		return ctrl.Result{}, err
 	}
 
-	// No presence anywhere means nothing needs the identity. Collect the object
-	// and its placement rather than leave them to be matched forever for a
-	// network that may no longer exist.
-	//
-	// This is safe to undo. The IPAM claim is retained and named from the
-	// network's namespace and name, so a network that comes back to a location
-	// is republished with the identity it always had, never a new one.
-	if len(presences) == 0 {
-		return ctrl.Result{}, r.collect(ctx, req.Namespace, req.Name)
+	// A network on its way out still has an identity, and deliberately keeps it
+	// until it is actually gone. The VRF device is named from the identity and
+	// the Route Target derives from it, so tearing a network down needs it as
+	// much as standing it up did; collecting on the deletion timestamp would
+	// pull it out from under a teardown still in flight. The cost is that a
+	// network wedged on a stuck finalizer holds its object indefinitely, which
+	// is a leak, and a leak is recoverable where a torn-down data plane is not.
+
+	presences, err := r.presences(ctx, req.Namespace, req.Name)
+	if err != nil {
+		// A list that failed says nothing about where the network is required.
+		return ctrl.Result{}, err
 	}
 
 	locations := locationsFrom(presences)
@@ -279,12 +298,14 @@ func (r *NetworkFabricIdentityReconciler) claim(
 	return identity, nil
 }
 
-// collect removes the published identity when nothing requires it any more.
+// collect removes the published identity once the network it belongs to is
+// gone.
 //
 // The IPAM claim is deliberately not released. A Route Target still installed
 // in a remote location's import policy would silently merge a new network into
 // a dead one's routes, so the allocation is retained forever and the identity
-// is never reissued. Only the object and its placement go.
+// is never reissued. Only the object goes; the per-location policies are shared
+// and stay.
 func (r *NetworkFabricIdentityReconciler) collect(
 	ctx context.Context,
 	namespace string,
@@ -362,10 +383,18 @@ func FabricIdentityPolicyName(location string) string {
 	return "cloud-fabric-identity-" + location
 }
 
-// SetupWithManager registers the reconciler. Placement follows the network's
-// presences, so a presence appearing or going away has to wake the network it
-// belongs to; nothing else would carry the identity to a location the network
-// has just reached.
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networks;networkcontexts,verbs=get;list;watch
+// +kubebuilder:rbac:groups=cloud.datumapis.com,resources=networkfabricidentities,verbs=create;delete;get;list;patch;update;watch
+// +kubebuilder:rbac:groups=policy.karmada.io,resources=clusterpropagationpolicies,verbs=create;get;list;patch;update;watch
+
+// SetupWithManager registers the reconciler.
+//
+// The network is the primary object: it decides whether an identity exists.
+// Contexts still have to wake it, because placement follows them and nothing
+// else would carry the identity to a location the network has just reached.
+//
+// Every request is keyed by a network, never by a context, because one
+// network's identity is decided from all of its contexts at once.
 func (r *NetworkFabricIdentityReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.IdentityClass == "" {
 		return errors.New("an identifier class is required")
@@ -373,13 +402,9 @@ func (r *NetworkFabricIdentityReconciler) SetupWithManager(mgr ctrl.Manager) err
 	if r.IPAM == nil {
 		return errors.New("an identifier space is required")
 	}
-	// Driven entirely by NetworkContexts. A context names its network, carries
-	// its UID, and gives the location, so nothing here has to reach the plane a
-	// Network lives in.
-	// Every request is keyed by a network, never by a context, because one
-	// network's identity is decided from all of its contexts at once.
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("networkfabricidentity").
+		For(&networkingv1alpha.Network{}).
 		Watches(&networkingv1alpha.NetworkContext{}, handler.EnqueueRequestsFromMapFunc(
 			func(_ context.Context, obj client.Object) []reconcile.Request {
 				presence, ok := obj.(*networkingv1alpha.NetworkContext)
