@@ -102,6 +102,7 @@ rules:
   - clusterpropagationpolicies
   verbs:
   - create
+  - delete
   - get
   - list
   - patch
