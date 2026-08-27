@@ -21,6 +21,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -329,16 +330,37 @@ func (f *identityFixture) placement() ([]string, bool) {
 	return locations, len(locations) > 0
 }
 
-// policyFor reads the one policy that carries every identity required at a
-// location. There is one of these per location, not per network.
-func (f *identityFixture) policyFor(location string) (*unstructured.Unstructured, bool) {
+// policyFor reads the one policy that carries one identity to every location
+// it is required at. There is one of these per network, not per location.
+func (f *identityFixture) policyFor(networkName string) (*unstructured.Unstructured, bool) {
 	f.t.Helper()
 	policy := &unstructured.Unstructured{}
 	policy.SetGroupVersionKind(clusterPropagationPolicyGVK)
-	if err := f.hub.Get(f.ctx, client.ObjectKey{Name: FabricIdentityPolicyName(location)}, policy); err != nil {
+	key := client.ObjectKey{Name: FabricIdentityPolicyName(testNamespace, networkName)}
+	if err := f.hub.Get(f.ctx, key, policy); err != nil {
 		return nil, false
 	}
 	return policy, true
+}
+
+// placementLocations reads the locations a policy places its identity on.
+func placementLocations(t *testing.T, policy *unstructured.Unstructured) []string {
+	t.Helper()
+	expressions, _, err := unstructured.NestedSlice(policy.Object,
+		"spec", "placement", "clusterAffinity", "labelSelector", "matchExpressions")
+	if err != nil || len(expressions) != 1 {
+		t.Fatalf("expected one placement expression, got %v (%v)", expressions, err)
+	}
+	expression, _ := expressions[0].(map[string]any)
+	if key, _, _ := unstructured.NestedString(expression, "key"); key != servingLocationTopologyLabel {
+		t.Fatalf("placement must select the label a cell claims its location with, got %q", key)
+	}
+	if op, _, _ := unstructured.NestedString(expression, "operator"); op != "In" {
+		t.Fatalf("placement must match any of the locations, got operator %q", op)
+	}
+	values, _, _ := unstructured.NestedStringSlice(expression, "values")
+	sort.Strings(values)
+	return values
 }
 
 // The identity is published on a cloud object, not on the Network. Nothing a
@@ -588,37 +610,42 @@ func newPresence(location string) *networkingv1alpha.NetworkContext {
 	return presence
 }
 
-// One policy per location, selecting every identity required there. The policy
-// count is the number of locations, not the number of networks.
-func TestOnePolicyPerLocationCarriesEveryIdentityRequiredThere(t *testing.T) {
+// One policy per identity, naming that one object and listing every location
+// it is required at.
+//
+// Karmada binds a resource to exactly one policy. Per-location policies each
+// selecting the same identity by label therefore compete for it, and only the
+// winner's placement takes effect -- an identity required in two locations
+// reaches one of them, silently. Naming the object is what makes that
+// impossible.
+func TestOnePolicyPerIdentityCarriesItToEveryLocation(t *testing.T) {
 	f := newIdentityFixture(t, "us-central-1", "us-east-1")
 	f.reconcile()
 
-	for _, location := range []string{"us-central-1", "us-east-1"} {
-		policy, ok := f.policyFor(location)
-		if !ok {
-			t.Fatalf("expected a policy for %q", location)
-		}
-
-		selectors, _, err := unstructured.NestedSlice(policy.Object, "spec", "resourceSelectors")
-		if err != nil || len(selectors) != 1 {
-			t.Fatalf("expected one resource selector, got %v (%v)", selectors, err)
-		}
-		entry, _ := selectors[0].(map[string]any)
-		labels, _, _ := unstructured.NestedStringMap(entry, "labelSelector", "matchLabels")
-		if labels[LocationLabel(location)] != "true" {
-			t.Fatalf("the policy for %q must select identities required there, got %v", location, labels)
-		}
-
-		placement, _, _ := unstructured.NestedStringMap(policy.Object,
-			"spec", "placement", "clusterAffinity", "labelSelector", "matchLabels")
-		if placement[servingLocationTopologyLabel] != location {
-			t.Fatalf("the policy for %q must place on the cell serving it, got %v", location, placement)
-		}
+	policy, ok := f.policyFor(testNetworkName)
+	if !ok {
+		t.Fatalf("expected a policy for %q", testNetworkName)
 	}
 
-	// A second network in the same location reuses the same policy rather than
-	// adding one.
+	selectors, _, err := unstructured.NestedSlice(policy.Object, "spec", "resourceSelectors")
+	if err != nil || len(selectors) != 1 {
+		t.Fatalf("expected one resource selector, got %v (%v)", selectors, err)
+	}
+	entry, _ := selectors[0].(map[string]any)
+	name, _, _ := unstructured.NestedString(entry, "name")
+	namespace, _, _ := unstructured.NestedString(entry, "namespace")
+	if name != testNetworkName || namespace != testNamespace {
+		t.Fatalf("the policy must name the one identity it carries, got %s/%s", namespace, name)
+	}
+	if _, found, _ := unstructured.NestedMap(entry, "labelSelector"); found {
+		t.Fatal("selecting by label is what lets two policies contend for one identity")
+	}
+
+	if locations := placementLocations(t, policy); !slices.Equal(locations, []string{"us-central-1", "us-east-1"}) {
+		t.Fatalf("the policy must place on every location the network reaches, got %v", locations)
+	}
+
+	// A second network needs its own policy: one identity, one policy.
 	f.addNetwork("staging", "us-central-1")
 	if _, err := f.reconciler.Reconcile(f.ctx, ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: "staging"},
@@ -632,7 +659,63 @@ func TestOnePolicyPerLocationCarriesEveryIdentityRequiredThere(t *testing.T) {
 		t.Fatalf("list policies: %v", err)
 	}
 	if len(policies.Items) != 2 {
-		t.Fatalf("two locations must need two policies however many networks there are, got %d", len(policies.Items))
+		t.Fatalf("two networks must have two policies however many locations they reach, got %d", len(policies.Items))
+	}
+
+	// No identity may be selected by more than one policy.
+	named := map[string]int{}
+	for i := range policies.Items {
+		selectors, _, _ := unstructured.NestedSlice(policies.Items[i].Object, "spec", "resourceSelectors")
+		for _, selector := range selectors {
+			entry, _ := selector.(map[string]any)
+			namespace, _, _ := unstructured.NestedString(entry, "namespace")
+			name, _, _ := unstructured.NestedString(entry, "name")
+			named[namespace+"/"+name]++
+		}
+	}
+	for identity, count := range named {
+		if count != 1 {
+			t.Fatalf("identity %s is selected by %d policies; Karmada honours only one", identity, count)
+		}
+	}
+}
+
+// The per-location policies this replaces select by label, so they keep
+// competing for identities until they are gone.
+func TestLegacyPerLocationPoliciesAreSweptAway(t *testing.T) {
+	f := newIdentityFixture(t, "us-central-1", "us-east-1")
+
+	legacy := &unstructured.Unstructured{Object: map[string]any{
+		"spec": map[string]any{
+			"resourceSelectors": []any{map[string]any{
+				"apiVersion":    cloudv1alpha1.GroupVersion.String(),
+				"kind":          "NetworkFabricIdentity",
+				"labelSelector": map[string]any{"matchLabels": map[string]any{LocationLabel("us-central-1"): "true"}},
+			}},
+		},
+	}}
+	legacy.SetGroupVersionKind(clusterPropagationPolicyGVK)
+	legacy.SetName("cloud-fabric-identity-us-central-1")
+	legacy.SetLabels(map[string]string{FabricIdentityPolicyLabel: "true"})
+	if err := f.hub.Create(f.ctx, legacy); err != nil {
+		t.Fatalf("create the legacy policy: %v", err)
+	}
+
+	f.reconcile()
+	if err := f.reconciler.sweepLegacyPlacements(f.ctx); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	swept := &unstructured.Unstructured{}
+	swept.SetGroupVersionKind(clusterPropagationPolicyGVK)
+	err := f.hub.Get(f.ctx, client.ObjectKey{Name: "cloud-fabric-identity-us-central-1"}, swept)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("the legacy policy must be gone, got %v", err)
+	}
+
+	// The policy written under the new scheme is left alone.
+	if _, ok := f.policyFor(testNetworkName); !ok {
+		t.Fatal("the sweep must not remove a policy that names its identity")
 	}
 }
 

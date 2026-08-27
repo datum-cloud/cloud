@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
@@ -55,11 +56,11 @@ const (
 	// the location it serves. Placement selects on it.
 	servingLocationTopologyLabel = "topology.datum.net/location"
 
-	// fabricIdentityLocationLabelPrefix marks an identity as required at one
-	// location. It follows the per-location convention the existing policies
-	// already select on, with the location in the key rather than the value: a
-	// label key holds one value, and one network is required in several
-	// locations at once.
+	// fabricIdentityLocationLabelPrefix records that an identity is required at
+	// one location, with the location in the key rather than the value: a label
+	// key holds one value, and one network is required in several locations at
+	// once. Placement no longer selects on it -- see place -- but it stays as
+	// the readable record of where an identity is needed.
 	fabricIdentityLocationLabelPrefix = "cloud.datumapis.com/location-"
 )
 
@@ -165,7 +166,7 @@ func (r *NetworkFabricIdentityReconciler) Reconcile(ctx context.Context, req ctr
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{}, r.placeLocations(ctx, locations)
+	return ctrl.Result{}, r.place(ctx, req.Namespace, req.Name, locations)
 }
 
 // presences reads the contexts declaring the network is required somewhere.
@@ -332,7 +333,9 @@ func (r *NetworkFabricIdentityReconciler) collect(
 	if err := r.Hub.Delete(ctx, object); err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("collect the fabric identity for network %q: %w", networkName, err)
 	}
-	return nil
+	// The policy names this one identity, so nothing else can be left holding
+	// it and it would otherwise outlive the network forever.
+	return r.unplace(ctx, namespace, networkName)
 }
 
 // placeLocations keeps one policy per location, not one per network.
@@ -346,16 +349,24 @@ func (r *NetworkFabricIdentityReconciler) collect(
 //
 // Placing it fleet-wide is not an option: the identity is capability-like, and
 // what holds it can name a network's forwarding state.
-func (r *NetworkFabricIdentityReconciler) placeLocations(ctx context.Context, locations []string) error {
-	for _, location := range locations {
-		if err := r.placeLocation(ctx, location); err != nil {
-			return err
-		}
+// place carries one identity to every location it is required at, with a
+// single policy that names that one object.
+//
+// One policy per identity, not one per location: Karmada binds a resource to
+// exactly one policy, so per-location policies all selecting the same identity
+// by label compete for it, and only the winner's placement takes effect. An
+// identity required in two locations then reaches one of them, silently, which
+// is exactly the split this whole mechanism exists to prevent.
+func (r *NetworkFabricIdentityReconciler) place(
+	ctx context.Context,
+	namespace string,
+	networkName string,
+	locations []string,
+) error {
+	if len(locations) == 0 {
+		return r.unplace(ctx, namespace, networkName)
 	}
-	return nil
-}
 
-func (r *NetworkFabricIdentityReconciler) placeLocation(ctx context.Context, location string) error {
 	policy := &unstructured.Unstructured{Object: map[string]any{
 		"spec": map[string]any{
 			"conflictResolution": "Overwrite",
@@ -363,18 +374,19 @@ func (r *NetworkFabricIdentityReconciler) placeLocation(ctx context.Context, loc
 				map[string]any{
 					"apiVersion": cloudv1alpha1.GroupVersion.String(),
 					"kind":       "NetworkFabricIdentity",
-					"labelSelector": map[string]any{
-						"matchLabels": map[string]any{
-							LocationLabel(location): "true",
-						},
-					},
+					"namespace":  namespace,
+					"name":       networkName,
 				},
 			},
 			"placement": map[string]any{
 				"clusterAffinity": map[string]any{
 					"labelSelector": map[string]any{
-						"matchLabels": map[string]any{
-							servingLocationTopologyLabel: location,
+						"matchExpressions": []any{
+							map[string]any{
+								"key":      servingLocationTopologyLabel,
+								"operator": "In",
+								"values":   locationValues(locations),
+							},
 						},
 					},
 				},
@@ -382,19 +394,87 @@ func (r *NetworkFabricIdentityReconciler) placeLocation(ctx context.Context, loc
 		},
 	}}
 	policy.SetGroupVersionKind(clusterPropagationPolicyGVK)
-	policy.SetName(FabricIdentityPolicyName(location))
+	policy.SetName(FabricIdentityPolicyName(namespace, networkName))
 	policy.SetLabels(map[string]string{FabricIdentityPolicyLabel: "true"})
 
 	if err := r.Hub.Patch(ctx, policy, client.Apply, //nolint:staticcheck // SA1019: the typed Apply API needs a generated ApplyConfiguration this unstructured policy has none of
 		client.FieldOwner(fabricIdentityFieldManager), client.ForceOwnership); err != nil {
-		return fmt.Errorf("place fabric identities for location %q: %w", location, err)
+		return fmt.Errorf("place the fabric identity for network %q: %w", networkName, err)
 	}
 	return nil
 }
 
-// FabricIdentityPolicyName names the placement for one location.
-func FabricIdentityPolicyName(location string) string {
-	return "cloud-fabric-identity-" + location
+// unplace removes the policy for an identity required nowhere. The identity
+// itself stays: the next context to appear must find the value the fabric
+// already knows the network by.
+func (r *NetworkFabricIdentityReconciler) unplace(ctx context.Context, namespace, networkName string) error {
+	policy := &unstructured.Unstructured{}
+	policy.SetGroupVersionKind(clusterPropagationPolicyGVK)
+	policy.SetName(FabricIdentityPolicyName(namespace, networkName))
+
+	if err := r.Hub.Delete(ctx, policy); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("unplace the fabric identity for network %q: %w", networkName, err)
+	}
+	return nil
+}
+
+// sweepLegacyPlacements removes the per-location policies this controller used
+// to write. They select identities by label, so they keep competing with the
+// per-identity policies that replaced them for as long as they exist, and a
+// resource Karmada binds to the wrong one reaches the wrong cells.
+//
+// Identified by shape rather than by name: a policy this controller owns whose
+// selectors carry no resource name is selecting by label, which only the old
+// form did.
+func (r *NetworkFabricIdentityReconciler) sweepLegacyPlacements(ctx context.Context) error {
+	var policies unstructured.UnstructuredList
+	policies.SetGroupVersionKind(clusterPropagationPolicyGVK.GroupVersion().WithKind("ClusterPropagationPolicyList"))
+	if err := r.Hub.List(ctx, &policies, client.MatchingLabels{FabricIdentityPolicyLabel: "true"}); err != nil {
+		return fmt.Errorf("read the fabric identity placement policies: %w", err)
+	}
+
+	for i := range policies.Items {
+		policy := &policies.Items[i]
+		if !selectsByLabel(policy) {
+			continue
+		}
+		if err := r.Hub.Delete(ctx, policy); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("remove the legacy placement policy %q: %w", policy.GetName(), err)
+		}
+		ctrl.LoggerFrom(ctx).Info("removed a legacy per-location placement policy", "policy", policy.GetName())
+	}
+	return nil
+}
+
+// selectsByLabel reports whether a policy selects resources without naming one.
+func selectsByLabel(policy *unstructured.Unstructured) bool {
+	selectors, found, err := unstructured.NestedSlice(policy.Object, "spec", "resourceSelectors")
+	if err != nil || !found || len(selectors) == 0 {
+		return false
+	}
+	for _, entry := range selectors {
+		selector, ok := entry.(map[string]any)
+		if !ok {
+			return false
+		}
+		if name, _, _ := unstructured.NestedString(selector, "name"); name == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// locationValues is locations as the []any an unstructured policy needs.
+func locationValues(locations []string) []any {
+	values := make([]any, 0, len(locations))
+	for _, location := range locations {
+		values = append(values, location)
+	}
+	return values
+}
+
+func FabricIdentityPolicyName(namespace, networkName string) string {
+	return "cloud-fabric-identity-" + namespace + "-" + networkName
 }
 
 // The manager runs locally, so what this ServiceAccount has to be able to do is
@@ -432,6 +512,11 @@ func (r *NetworkFabricIdentityReconciler) SetupWithManager(mgr ctrl.Manager) err
 	}
 
 	hubCache := r.HubCluster.GetCache()
+
+	// Once, on the leader, before anything is placed under the new scheme.
+	if err := mgr.Add(manager.RunnableFunc(r.sweepLegacyPlacements)); err != nil {
+		return fmt.Errorf("schedule the legacy placement sweep: %w", err)
+	}
 
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("networkfabricidentity").
