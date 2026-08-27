@@ -31,6 +31,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -768,6 +769,50 @@ func TestPlacementSurvivesAnUnreadablePresence(t *testing.T) {
 // failingLister stands in for a control plane that cannot answer. Every list is
 // an error, which is the case a placement must never mistake for "the network
 // is required nowhere".
+// A sweep that cannot delete must not stop the manager: a controller that
+// refuses to start reconciles nothing, which is strictly worse than a leftover
+// policy it complains about.
+func TestASweepThatCannotDeleteStillStarts(t *testing.T) {
+	f := newIdentityFixture(t, "us-central-1")
+
+	legacy := &unstructured.Unstructured{Object: map[string]any{
+		"spec": map[string]any{
+			"resourceSelectors": []any{map[string]any{
+				"apiVersion":    cloudv1alpha1.GroupVersion.String(),
+				"kind":          "NetworkFabricIdentity",
+				"labelSelector": map[string]any{"matchLabels": map[string]any{LocationLabel("us-central-1"): "true"}},
+			}},
+		},
+	}}
+	legacy.SetGroupVersionKind(clusterPropagationPolicyGVK)
+	legacy.SetName("cloud-fabric-identity-us-central-1")
+	legacy.SetLabels(map[string]string{FabricIdentityPolicyLabel: "true"})
+	if err := f.hub.Create(f.ctx, legacy); err != nil {
+		t.Fatalf("create the legacy policy: %v", err)
+	}
+
+	f.reconciler.Hub = failingDeleter{Client: f.hub}
+	if err := f.reconciler.sweepLegacyPlacements(f.ctx); err != nil {
+		t.Fatalf("a sweep that cannot delete must not be an error, got %v", err)
+	}
+
+	// A hub it cannot even read is equally survivable.
+	f.reconciler.Hub = failingLister{Client: f.hub}
+	if err := f.reconciler.sweepLegacyPlacements(f.ctx); err != nil {
+		t.Fatalf("a sweep that cannot read must not be an error, got %v", err)
+	}
+}
+
+type failingDeleter struct {
+	client.Client
+}
+
+func (failingDeleter) Delete(context.Context, client.Object, ...client.DeleteOption) error {
+	return apierrors.NewForbidden(schema.GroupResource{
+		Group: "policy.karmada.io", Resource: "clusterpropagationpolicies",
+	}, "cloud-fabric-identity-us-central-1", errors.New("not permitted"))
+}
+
 type failingLister struct {
 	client.Client
 }

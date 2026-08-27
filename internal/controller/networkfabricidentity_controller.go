@@ -426,11 +426,18 @@ func (r *NetworkFabricIdentityReconciler) unplace(ctx context.Context, namespace
 // Identified by shape rather than by name: a policy this controller owns whose
 // selectors carry no resource name is selecting by label, which only the old
 // form did.
+// It is deliberately best-effort and never returns an error. It runs as a
+// manager runnable, where an error stops the manager, and a leftover policy is
+// a correctness problem worth logging loudly where a controller that will not
+// start reconciles nothing at all.
 func (r *NetworkFabricIdentityReconciler) sweepLegacyPlacements(ctx context.Context) error {
+	log := ctrl.LoggerFrom(ctx)
+
 	var policies unstructured.UnstructuredList
 	policies.SetGroupVersionKind(clusterPropagationPolicyGVK.GroupVersion().WithKind("ClusterPropagationPolicyList"))
 	if err := r.Hub.List(ctx, &policies, client.MatchingLabels{FabricIdentityPolicyLabel: "true"}); err != nil {
-		return fmt.Errorf("read the fabric identity placement policies: %w", err)
+		log.Error(err, "could not read the fabric identity placement policies to sweep")
+		return nil
 	}
 
 	for i := range policies.Items {
@@ -439,9 +446,11 @@ func (r *NetworkFabricIdentityReconciler) sweepLegacyPlacements(ctx context.Cont
 			continue
 		}
 		if err := r.Hub.Delete(ctx, policy); err != nil && !apierrors.IsNotFound(err) {
-			return fmt.Errorf("remove the legacy placement policy %q: %w", policy.GetName(), err)
+			log.Error(err, "could not remove a legacy per-location placement policy, it will keep competing for identities",
+				"policy", policy.GetName())
+			continue
 		}
-		ctrl.LoggerFrom(ctx).Info("removed a legacy per-location placement policy", "policy", policy.GetName())
+		log.Info("removed a legacy per-location placement policy", "policy", policy.GetName())
 	}
 	return nil
 }
@@ -486,7 +495,7 @@ func FabricIdentityPolicyName(namespace, networkName string) string {
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networks;networkcontexts,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cloud.datumapis.com,resources=networkfabricidentities,verbs=create;delete;get;list;patch;update;watch
-// +kubebuilder:rbac:groups=policy.karmada.io,resources=clusterpropagationpolicies,verbs=create;get;list;patch;update;watch
+// +kubebuilder:rbac:groups=policy.karmada.io,resources=clusterpropagationpolicies,verbs=create;delete;get;list;patch;update;watch
 
 // SetupWithManager registers the reconciler.
 //
