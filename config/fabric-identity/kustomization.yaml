@@ -3,22 +3,22 @@
 # locations, so the one value that has to be the same in all of them cannot be
 # decided in any one of them.
 #
-# The manager itself runs against the federation hub rather than the cluster it
-# is scheduled on. Everything it reads is there — the Network and its
-# NetworkContexts, both mirrored on to the hub by the network operator — and
-# everything it writes is there too, so the leader election that keeps one
-# network to one identity belongs on the same plane as the writes it guards.
+# The manager runs against the cluster it is scheduled on and reaches the
+# federation hub as a second cluster. Everything it reads and writes is on the
+# hub: the Network and its NetworkContexts, both mirrored there by the network
+# operator, and the identity and its placement. Only the leader election lease
+# is local, so that an unreachable hub costs this component its work rather than
+# its identity.
 #
 # RBAC comes from ../rbac unchanged. The repo generates one ClusterRole from
 # every marker under ./internal/..., so both roles this image runs share a role
 # and a ServiceAccount name; splitting them means splitting the generator, and
 # the role is only ever bound in one namespace per deployment.
 #
-# The ClusterRole is what an operator binds to the federation credential's
-# identity ON THE HUB — that is where every read and every write this component
-# makes lands, including its leader election lease. The binding here exists
-# because the pod needs a ServiceAccount to exist; it authorises nothing this
-# component actually uses.
+# The binding here is what covers the lease and the events, which is everything
+# this component does on the cluster it runs on. The same ClusterRole names what
+# it needs on the hub, and an operator binds it there to the federation
+# credential's identity.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: fabric-identity-system

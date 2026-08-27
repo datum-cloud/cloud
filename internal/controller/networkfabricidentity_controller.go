@@ -30,10 +30,12 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	cloudv1alpha1 "go.datum.net/cloud/api/v1alpha1"
 	"go.datum.net/cloud/internal/fabricidentity"
@@ -97,6 +99,18 @@ type NetworkFabricIdentityReconciler struct {
 	// Hub is where the identity and its placement are written, and from where
 	// federation carries them to the cells.
 	Hub client.Client
+
+	// HubCluster is the hub as a cluster rather than a client, and is what the
+	// watches are sourced from.
+	//
+	// The manager itself runs against the cluster this is scheduled on, not
+	// against the hub. Leases on the hub would put a constant write load on a
+	// control plane everything else federates through, and would tie this
+	// component's leadership to that plane being reachable: a hub hiccup would
+	// churn leadership and restart the controller. Keeping the lease local
+	// means an unreachable hub costs this component its work, which cannot be
+	// avoided, and not its identity, which can.
+	HubCluster cluster.Cluster
 
 	// IPAM reaches the identifier space.
 	IPAM ipam.ClientFactory
@@ -383,6 +397,13 @@ func FabricIdentityPolicyName(location string) string {
 	return "cloud-fabric-identity-" + location
 }
 
+// The manager runs locally, so what this ServiceAccount has to be able to do is
+// hold a leader election lease and record events. Everything else is read and
+// written on the hub under the federation credential, and is declared here
+// because this role is also what an operator binds there.
+//
+// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=create;delete;get;list;patch;update;watch
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networks;networkcontexts,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cloud.datumapis.com,resources=networkfabricidentities,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups=policy.karmada.io,resources=clusterpropagationpolicies,verbs=create;get;list;patch;update;watch
@@ -395,6 +416,10 @@ func FabricIdentityPolicyName(location string) string {
 //
 // Every request is keyed by a network, never by a context, because one
 // network's identity is decided from all of its contexts at once.
+//
+// Both watches are sourced from the hub's cache rather than the manager's own,
+// because that is where the copies live. The manager's cluster holds only the
+// lease.
 func (r *NetworkFabricIdentityReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.IdentityClass == "" {
 		return errors.New("an identifier class is required")
@@ -402,19 +427,26 @@ func (r *NetworkFabricIdentityReconciler) SetupWithManager(mgr ctrl.Manager) err
 	if r.IPAM == nil {
 		return errors.New("an identifier space is required")
 	}
+	if r.HubCluster == nil {
+		return errors.New("a hub to watch is required")
+	}
+
+	hubCache := r.HubCluster.GetCache()
+
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("networkfabricidentity").
-		For(&networkingv1alpha.Network{}).
-		Watches(&networkingv1alpha.NetworkContext{}, handler.EnqueueRequestsFromMapFunc(
-			func(_ context.Context, obj client.Object) []reconcile.Request {
-				presence, ok := obj.(*networkingv1alpha.NetworkContext)
-				if !ok || presence.Spec.Network.Name == "" {
-					return nil
-				}
-				return []reconcile.Request{{NamespacedName: types.NamespacedName{
-					Namespace: presence.Namespace,
-					Name:      presence.Spec.Network.Name,
-				}}}
-			})).
+		WatchesRawSource(source.Kind(hubCache, &networkingv1alpha.Network{},
+			&handler.TypedEnqueueRequestForObject[*networkingv1alpha.Network]{})).
+		WatchesRawSource(source.Kind(hubCache, &networkingv1alpha.NetworkContext{},
+			handler.TypedEnqueueRequestsFromMapFunc(
+				func(_ context.Context, presence *networkingv1alpha.NetworkContext) []reconcile.Request {
+					if presence == nil || presence.Spec.Network.Name == "" {
+						return nil
+					}
+					return []reconcile.Request{{NamespacedName: types.NamespacedName{
+						Namespace: presence.Namespace,
+						Name:      presence.Spec.Network.Name,
+					}}}
+				}))).
 		Complete(r)
 }

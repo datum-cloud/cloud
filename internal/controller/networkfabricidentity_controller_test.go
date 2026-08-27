@@ -718,3 +718,19 @@ func TestARetainedAllocationIsAdoptedRatherThanReallocated(t *testing.T) {
 		t.Fatal("the identity must come from the retained allocation, not from a fresh one")
 	}
 }
+
+// The watches are sourced from the hub's cache, not the manager's own, because
+// the manager runs against the cluster this is scheduled on and only the leader
+// election lease lives there. Wired without a hub, the controller would come up
+// watching a plane that holds none of the objects it exists for and would sit
+// idle rather than fail, so setup refuses instead.
+func TestSetupRefusesWithoutAHubToWatch(t *testing.T) {
+	reconciler := &NetworkFabricIdentityReconciler{
+		IPAM:          newFakeIdentityIPAM(t),
+		IdentityClass: testClass,
+	}
+
+	if err := reconciler.SetupWithManager(nil); err == nil {
+		t.Fatal("a reconciler with no hub to watch must refuse to start")
+	}
+}

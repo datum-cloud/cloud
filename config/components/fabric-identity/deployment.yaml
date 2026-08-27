@@ -97,6 +97,9 @@ spec:
         # landed yet says so plainly; one started against an empty dir
         # crashloops until the kubelet's next volume resync swaps the real
         # secret in, which reads as a broken image rather than a missing secret.
+        #
+        # The hub credential is not what this pod authenticates to its own
+        # cluster with. Leader election runs locally under the ServiceAccount.
         - name: ipam-cluster-kubeconfig
           secret:
             secretName: ipam-cluster-kubeconfig

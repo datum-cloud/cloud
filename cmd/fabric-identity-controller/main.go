@@ -32,6 +32,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -68,7 +69,7 @@ func main() {
 	flag.StringVar(&ipamKubeconfig, "ipam-kubeconfig", "",
 		"Required. Path to a kubeconfig for the cluster serving the IPAM API.")
 	flag.StringVar(&hubKubeconfig, "hub-kubeconfig", "",
-		"Required. Path to a kubeconfig for the federation hub. Networks and their NetworkContexts are read there as copies published by the operator that owns them, and the identity and its placement are written there.")
+		"Required. Path to a kubeconfig for the federation hub. Networks and their NetworkContexts are read there as copies published by the operator that owns them, and the identity and its placement are written there. Leader election is not: that stays on the cluster this runs on.")
 
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
@@ -97,17 +98,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	// The manager runs against the hub rather than the cluster it is scheduled
-	// on. Everything it reads and everything it writes is there, and the leader
-	// election that keeps one network to one identity belongs on the same plane
-	// as the writes it guards.
 	hubRestConfig, err := clientcmd.BuildConfigFromFlags("", hubKubeconfig)
 	if err != nil {
 		setupLog.Error(err, "unable to load the hub kubeconfig")
 		os.Exit(1)
 	}
 
-	mgr, err := ctrl.NewManager(hubRestConfig, ctrl.Options{
+	// The manager runs against the cluster this is scheduled on, and reaches the
+	// hub as a second cluster. Only the leader election lease lives here.
+	//
+	// Putting the lease on the hub instead would write constantly to a control
+	// plane everything else federates through, and would make this component's
+	// leadership only as available as that plane: a hub hiccup would churn
+	// leadership and restart the controller. An unreachable hub has to cost
+	// this component its work. It does not have to cost it its identity.
+	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress: probeAddr,
@@ -137,13 +142,26 @@ func main() {
 		os.Exit(1)
 	}
 
+	hub, err := cluster.New(hubRestConfig, func(options *cluster.Options) {
+		options.Scheme = scheme
+	})
+	if err != nil {
+		setupLog.Error(err, "unable to reach the federation hub")
+		os.Exit(1)
+	}
+	if err := mgr.Add(hub); err != nil {
+		setupLog.Error(err, "unable to run the federation hub's cache")
+		os.Exit(1)
+	}
+
 	// Networks and Hub are both the hub. A Network lives in its consumer's
 	// project control plane, which this binary cannot reach, so it is read
 	// there as a copy the network operator publishes. They stay separate fields
 	// because a read failing and a write failing have to be distinguishable.
 	if err := (&controller.NetworkFabricIdentityReconciler{
-		Networks:          mgr.GetClient(),
-		Hub:               mgr.GetClient(),
+		Networks:          hub.GetClient(),
+		Hub:               hub.GetClient(),
+		HubCluster:        hub,
 		IPAM:              ipamClients,
 		IdentityClass:     identityClass,
 		IdentityNamespace: identityNamespace,
