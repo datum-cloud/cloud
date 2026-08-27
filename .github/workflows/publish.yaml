@@ -35,6 +35,7 @@ jobs:
     with:
       bundle-name: ghcr.io/datum-cloud/vpc-controller-kustomize
       bundle-path: config
-      image-name: ghcr.io/datum-cloud/vpc-controller
-      image-overlays: config/manager
+      images: |
+        - { path: config/manager, name: ghcr.io/datum-cloud/vpc-controller }
+        - { path: config/fabric-identity, name: ghcr.io/datum-cloud/vpc-controller }
     secrets: inherit

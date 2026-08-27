@@ -28,3 +28,12 @@ resources:
   - ../rbac
 components:
   - ../components/fabric-identity
+
+# Pinned here rather than inherited from ../manager: this overlay does not
+# include it, and the publish workflow rewrites the tag in every overlay it is
+# given. Without a block of its own the deployment ships whatever the component
+# names, which is a tag the workflow never publishes.
+images:
+  - name: ghcr.io/datum-cloud/vpc-controller
+    newName: ghcr.io/datum-cloud/vpc-controller
+    newTag: latest
