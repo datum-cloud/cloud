@@ -23,12 +23,15 @@ import (
 	"slices"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudv1alpha1 "go.datum.net/cloud/api/v1alpha1"
 	"go.datum.net/cloud/internal/identifier"
@@ -44,6 +47,7 @@ type NetworkContextReconciler struct {
 }
 
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkcontexts,verbs=get;list;watch
+// +kubebuilder:rbac:groups=cloud.datumapis.com,resources=networkfabricidentities,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=subnets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cloud.datumapis.com,resources=vpcs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cloud.datumapis.com,resources=vpcs/status,verbs=get;update;patch
@@ -82,12 +86,23 @@ func (r *NetworkContextReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, fmt.Errorf("reconcile VPC %s: %w", vpc.Name, err)
 	}
 
+	// Everything below is conditioned on the VPC not having an identifier yet. A
+	// VPC that already has one keeps it: the VRF device is named from it and the
+	// Route Target derives from it, so renumbering a live VPC would rename its
+	// interface and change its routes under running traffic.
 	if vpc.Status.VPC == "" {
-		allocated, err := r.allocateVPCIdentifier(ctx)
+		identity, found, err := r.fabricIdentity(ctx, &networkContext)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
-		vpc.Status.VPC = allocated
+		if !found {
+			return ctrl.Result{}, r.markAwaitingFabricIdentity(ctx, vpc)
+		}
+		encoded, err := identifier.VPCBase62(uint64(identity))
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("encode fabric identity %d for VPC %s: %w", identity, vpc.Name, err)
+		}
+		vpc.Status.VPC = encoded
 	}
 	vpc.Status.ObservedGeneration = vpc.Generation
 	meta.SetStatusCondition(&vpc.Status.Conditions, metav1.Condition{
@@ -102,6 +117,63 @@ func (r *NetworkContextReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// fabricIdentity reads the identity carried to this cell for the context's
+// network. It is one object per network, named after the network, in the
+// network's namespace. A missing one is an ordinary answer, not a failure.
+//
+// The identity is allocated centrally, once for the whole network, and carried
+// to each cell the network reaches. Deriving the VPC identifier from it is what
+// makes two locations of one network the same network on the fabric; drawing a
+// random value per location, which is what this used to do, made them two.
+//
+// A VPC whose identity has not arrived waits, and there is deliberately nothing
+// else it can do. The identifier is immutable, so a random value taken while
+// waiting is permanent, and a network whose locations then disagree is worse
+// than one with no VPC at all: a NetworkService spanning them binds no VRF and
+// fails every request, including through healthy members. Waiting ends the
+// moment the identity lands. A random draw never ends.
+func (r *NetworkContextReconciler) fabricIdentity(
+	ctx context.Context, networkContext *networkingv1alpha.NetworkContext,
+) (int64, bool, error) {
+	networkName := networkContext.Spec.Network.Name
+	if networkName == "" {
+		return 0, false, nil
+	}
+
+	var identity cloudv1alpha1.NetworkFabricIdentity
+	key := client.ObjectKey{Namespace: networkContext.Namespace, Name: networkName}
+	if err := r.Get(ctx, key, &identity); err != nil {
+		if apierrors.IsNotFound(err) {
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("read the fabric identity for network %q: %w", networkName, err)
+	}
+	if identity.Spec.Identity == 0 {
+		return 0, false, nil
+	}
+	return identity.Spec.Identity, true, nil
+}
+
+// markAwaitingFabricIdentity says out loud that the VPC has no identifier yet
+// and why, so a network stuck waiting on a central allocation is visible as
+// that rather than as a VPC that silently never became ready.
+func (r *NetworkContextReconciler) markAwaitingFabricIdentity(
+	ctx context.Context, vpc *cloudv1alpha1.VPC,
+) error {
+	vpc.Status.ObservedGeneration = vpc.Generation
+	meta.SetStatusCondition(&vpc.Status.Conditions, metav1.Condition{
+		Type:               cloudv1alpha1.ConditionTypeReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             "AwaitingFabricIdentity",
+		Message:            "Waiting for the identity the fabric knows this network by",
+		ObservedGeneration: vpc.Generation,
+	})
+	if err := r.Status().Update(ctx, vpc); err != nil {
+		return fmt.Errorf("update VPC %s status: %w", vpc.Name, err)
+	}
+	return nil
 }
 
 // networksForContext collects the CIDRs IPAM allocated for this location.
@@ -142,38 +214,36 @@ func subnetRange(subnet *networkingv1alpha.Subnet) (string, int32, bool) {
 	return "", 0, false
 }
 
-// allocateVPCIdentifier draws a random 48-bit identifier not already in use.
-// A single leader-elected controller is the only writer, so a list plus a
-// collision check serializes correctly.
-func (r *NetworkContextReconciler) allocateVPCIdentifier(ctx context.Context) (string, error) {
-	var vpcs cloudv1alpha1.VPCList
-	if err := r.List(ctx, &vpcs); err != nil {
-		return "", fmt.Errorf("list VPCs: %w", err)
-	}
-	used := make(map[string]struct{}, len(vpcs.Items))
-	for _, vpc := range vpcs.Items {
-		if vpc.Status.VPC != "" {
-			used[vpc.Status.VPC] = struct{}{}
-		}
-	}
-
-	for range maxIdentifierAttempts {
-		candidate, err := identifier.RandomVPCBase62()
-		if err != nil {
-			return "", err
-		}
-		if _, taken := used[candidate]; !taken {
-			return candidate, nil
-		}
-	}
-	return "", fmt.Errorf("no unused VPC identifier found after %d attempts", maxIdentifierAttempts)
-}
-
 // SetupWithManager registers the reconciler with the manager.
 func (r *NetworkContextReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&networkingv1alpha.NetworkContext{}).
 		Owns(&cloudv1alpha1.VPC{}).
+		Watches(&cloudv1alpha1.NetworkFabricIdentity{},
+			handler.EnqueueRequestsFromMapFunc(r.contextsForFabricIdentity)).
 		Named("networkcontext").
 		Complete(r)
+}
+
+// contextsForFabricIdentity wakes a network's presences the moment its identity
+// reaches this cell, so a VPC waiting on one takes it immediately instead of
+// sitting out its poll interval.
+func (r *NetworkContextReconciler) contextsForFabricIdentity(
+	ctx context.Context, object client.Object,
+) []reconcile.Request {
+	var contexts networkingv1alpha.NetworkContextList
+	if err := r.List(ctx, &contexts, client.InNamespace(object.GetNamespace())); err != nil {
+		return nil
+	}
+
+	requests := make([]reconcile.Request, 0, len(contexts.Items))
+	for i := range contexts.Items {
+		if contexts.Items[i].Spec.Network.Name != object.GetName() {
+			continue
+		}
+		requests = append(requests, reconcile.Request{
+			NamespacedName: client.ObjectKeyFromObject(&contexts.Items[i]),
+		})
+	}
+	return requests
 }

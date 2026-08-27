@@ -60,11 +60,6 @@ func Random(max uint64) (string, error) {
 	return Hex(n.Uint64()+1, max)
 }
 
-// RandomVPC returns a random 48-bit VPC identifier in hex.
-func RandomVPC() (string, error) {
-	return Random(MaxVPC)
-}
-
 // RandomVPCAttachment returns a random 16-bit attachment identifier in hex.
 func RandomVPCAttachment() (string, error) {
 	return Random(MaxVPCAttachment)
@@ -80,9 +75,10 @@ func Base62ToHex(value string) (string, error) {
 	return baseconv.Convert(value, baseconv.Digits62, baseconv.DigitsHex)
 }
 
-// RandomVPCBase62 returns a random VPC identifier in base62.
-func RandomVPCBase62() (string, error) {
-	hex, err := RandomVPC()
+// VPCBase62 renders a VPC identifier in base62, with the reserved-value guards
+// and the width that keeps a kernel interface name inside fifteen characters.
+func VPCBase62(value uint64) (string, error) {
+	hex, err := Hex(value, MaxVPC)
 	if err != nil {
 		return "", err
 	}

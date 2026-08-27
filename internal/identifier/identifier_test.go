@@ -29,14 +29,6 @@ func TestHexRejectsReservedValues(t *testing.T) {
 
 func TestRandomIdentifiersFitTheirInterfaceNameSegment(t *testing.T) {
 	for range 200 {
-		vpc, err := RandomVPCBase62()
-		if err != nil {
-			t.Fatalf("RandomVPCBase62: %v", err)
-		}
-		if len(vpc) > 9 {
-			t.Errorf("VPC identifier %q exceeds nine base62 characters", vpc)
-		}
-
 		attachment, err := RandomVPCAttachmentBase62()
 		if err != nil {
 			t.Fatalf("RandomVPCAttachmentBase62: %v", err)
@@ -48,9 +40,9 @@ func TestRandomIdentifiersFitTheirInterfaceNameSegment(t *testing.T) {
 }
 
 func TestBase62RoundTrip(t *testing.T) {
-	hex, err := RandomVPC()
+	hex, err := Random(MaxVPC)
 	if err != nil {
-		t.Fatalf("RandomVPC: %v", err)
+		t.Fatalf("Random(MaxVPC): %v", err)
 	}
 	base62, err := HexToBase62(hex)
 	if err != nil {
@@ -72,4 +64,24 @@ func trimLeadingZeros(value string) string {
 		}
 	}
 	return "0"
+}
+
+func TestVPCBase62RejectsReservedValuesAndFitsItsSegment(t *testing.T) {
+	for _, value := range []uint64{0, MaxVPC, MaxVPC + 1} {
+		if _, err := VPCBase62(value); err == nil {
+			t.Errorf("VPCBase62(%d): got no error, want one", value)
+		}
+	}
+
+	// The widest fabric identity is 32 bits, well inside the 48 the VPC
+	// identifier holds, so nothing an identity carries can overflow the segment.
+	for _, value := range []uint64{1, 16, 1 << 31, 1<<32 - 1} {
+		encoded, err := VPCBase62(value)
+		if err != nil {
+			t.Fatalf("VPCBase62(%d): %v", value, err)
+		}
+		if len(encoded) > 9 {
+			t.Errorf("VPCBase62(%d) = %q exceeds nine base62 characters", value, encoded)
+		}
+	}
 }
