@@ -431,12 +431,12 @@ func (r *NetworkFabricIdentityReconciler) unplace(ctx context.Context, namespace
 // a correctness problem worth logging loudly where a controller that will not
 // start reconciles nothing at all.
 func (r *NetworkFabricIdentityReconciler) sweepLegacyPlacements(ctx context.Context) error {
-	log := ctrl.LoggerFrom(ctx)
+	logger := ctrl.LoggerFrom(ctx)
 
 	var policies unstructured.UnstructuredList
 	policies.SetGroupVersionKind(clusterPropagationPolicyGVK.GroupVersion().WithKind("ClusterPropagationPolicyList"))
 	if err := r.Hub.List(ctx, &policies, client.MatchingLabels{FabricIdentityPolicyLabel: "true"}); err != nil {
-		log.Error(err, "could not read the fabric identity placement policies to sweep")
+		logger.Error(err, "could not read the fabric identity placement policies to sweep")
 		return nil
 	}
 
@@ -446,11 +446,11 @@ func (r *NetworkFabricIdentityReconciler) sweepLegacyPlacements(ctx context.Cont
 			continue
 		}
 		if err := r.Hub.Delete(ctx, policy); err != nil && !apierrors.IsNotFound(err) {
-			log.Error(err, "could not remove a legacy per-location placement policy, it will keep competing for identities",
+			logger.Error(err, "could not remove a legacy per-location placement policy, it will keep competing for identities",
 				"policy", policy.GetName())
 			continue
 		}
-		log.Info("removed a legacy per-location placement policy", "policy", policy.GetName())
+		logger.Info("removed a legacy per-location placement policy", "policy", policy.GetName())
 	}
 	return nil
 }
