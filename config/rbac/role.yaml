@@ -14,6 +14,7 @@ rules:
 - apiGroups:
   - cloud.datumapis.com
   resources:
+  - networkfabricidentities
   - vpcattachments
   - vpcs
   verbs:
@@ -80,6 +81,7 @@ rules:
   - networkcontexts
   - networkinterfaceclaims
   - networkinterfaces
+  - networks
   - subnets
   verbs:
   - get
@@ -94,3 +96,14 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - policy.karmada.io
+  resources:
+  - clusterpropagationpolicies
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch

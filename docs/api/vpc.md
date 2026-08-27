@@ -9,6 +9,7 @@
 Package v1alpha1 contains API Schema definitions for the cloud.datumapis.com/v1alpha1 API group.
 
 ### Resource Types
+- [NetworkFabricIdentity](#networkfabricidentity)
 - [VPC](#vpc)
 - [VPCAttachment](#vpcattachment)
 
@@ -40,6 +41,75 @@ _Validation:_
 _Appears in:_
 - [VPCSpec](#vpcspec)
 
+
+
+#### NetworkFabricIdentity
+
+
+
+NetworkFabricIdentity tells a location what identity the fabric knows a
+network by.
+
+There is one per network, not one per location. A VPC is the network's
+realization at a single location and takes its identity from here, which is
+what makes the locations of one network the same network on the fabric
+instead of unrelated ones that happen to share a name.
+
+This is platform-internal. It is written centrally and carried to the cells
+where the network is required; it never appears in a project control plane
+and no consumer reads or writes one. The identity is a value the fabric acts
+on directly, so it is kept to the platform rather than published beside the
+network it belongs to.
+
+This object is managed for you. It follows the Network it was allocated for.
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `cloud.datumapis.com/v1alpha1` | | |
+| `kind` _string_ | `NetworkFabricIdentity` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  |  |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  |  |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `spec` _[NetworkFabricIdentitySpec](#networkfabricidentityspec)_ | Spec is the whole of this object. There is no status: federation carries<br />configuration to a cell and deliberately does not carry status, so<br />anything a cell has to read has to be here. |  |  |
+
+
+#### NetworkFabricIdentityNetworkRef
+
+
+
+NetworkFabricIdentityNetworkRef identifies the network an identity was
+allocated for.
+
+
+
+_Appears in:_
+- [NetworkFabricIdentitySpec](#networkfabricidentityspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is the network's name. |  | Required: \{\} <br /> |
+
+
+#### NetworkFabricIdentitySpec
+
+
+
+NetworkFabricIdentitySpec carries the identity the fabric knows one network
+by.
+
+
+
+_Appears in:_
+- [NetworkFabricIdentity](#networkfabricidentity)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `identity` _integer_ | Identity is what the fabric knows the network by, the same in every<br />location the network reaches. The Route Target is derived from it, which<br />is what makes two locations of one network import each other's routes<br />rather than behave as two networks that share a name. The VRF device is<br />named from it for the same reason.<br />It is an integer rather than an encoded string because a consumer builds<br />`ASN:<identity>` from it and encodes it for its own use. It is 32 bits<br />wide because that is what survives into the Route Target: the fabric<br />truncates, so a wider value would be uniqueness the platform believes it<br />has and the fabric does not.<br />It is never zero and never changes. The fabric embeds it in import policy<br />in every location the network reaches, so a network that changed identity<br />would be a different network to everything already carrying its traffic. |  | Maximum: 4.294967295e+09 <br />Minimum: 1 <br />Required: \{\} <br /> |
+| `networkRef` _[NetworkFabricIdentityNetworkRef](#networkfabricidentitynetworkref)_ | NetworkRef names the network this identity belongs to.<br />It carries a name and no UID, deliberately. The identity is a permanent<br />property of a name in a namespace, not of one object's lifetime: a<br />network deleted and recreated under the same name inherits it. A UID here<br />would document the opposite of the rule. |  | Required: \{\} <br /> |
 
 
 #### NetworkInterfaceRef
