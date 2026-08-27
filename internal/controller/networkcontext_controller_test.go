@@ -20,7 +20,6 @@ package controller
 import (
 	"context"
 	"testing"
-	"time"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -167,17 +166,16 @@ func TestVPCTakesItsIdentifierFromTheNetworksFabricIdentity(t *testing.T) {
 	}
 }
 
-// A network whose identity has not reached this cell yet waits rather than
-// drawing a value it could never give back: the identifier is immutable, so a
-// fallback taken early is permanent.
+// A network whose identity has not reached this cell yet waits, and writes
+// nothing. The identifier is immutable, so a value taken while waiting is
+// permanent, and locations that disagree bind no VRF at all.
 func TestVPCWaitsForAnIdentityThatHasNotArrived(t *testing.T) {
 	fixture := newVPCFixture(t)
 
-	result := fixture.reconcile()
-
-	if result.RequeueAfter == 0 {
-		t.Fatal("a VPC waiting on an identity should ask to be looked at again")
+	if result := fixture.reconcile(); result.RequeueAfter != 0 {
+		t.Fatalf("the identity's arrival is the trigger, not a poll, got %v", result)
 	}
+
 	vpc := fixture.vpc()
 	if vpc.Status.VPC != "" {
 		t.Fatalf("no identifier should be written while waiting, got %q", vpc.Status.VPC)
@@ -206,32 +204,6 @@ func TestVPCTakesTheIdentityOnceItArrives(t *testing.T) {
 
 	if got := fixture.vpc().Status.VPC; got != vpcTestIdentifier {
 		t.Fatalf("VPC identifier: got %q, want %q", got, vpcTestIdentifier)
-	}
-}
-
-// Not every network has an identity yet, and one that never gets one still has
-// to end up with a working VPC. Past the grace period the old random draw
-// happens exactly as it did before.
-func TestVPCFallsBackToARandomIdentifierAfterTheGracePeriod(t *testing.T) {
-	stale := &cloudv1alpha1.VPC{}
-	stale.Namespace = vpcTestNamespace
-	stale.Name = vpcTestNetwork + "-" + vpcTestLocation
-	stale.CreationTimestamp = metav1.NewTime(time.Now().Add(-2 * fabricIdentityGracePeriod))
-
-	fixture := newVPCFixture(t, stale)
-
-	result := fixture.reconcile()
-
-	if result.RequeueAfter != 0 {
-		t.Fatal("a VPC past its grace period should stop waiting")
-	}
-	vpc := fixture.vpc()
-	if vpc.Status.VPC == "" {
-		t.Fatal("a VPC past its grace period should get a random identifier")
-	}
-	if condition := meta.FindStatusCondition(vpc.Status.Conditions, cloudv1alpha1.ConditionTypeReady); condition == nil ||
-		condition.Status != metav1.ConditionTrue {
-		t.Fatalf("a VPC with an identifier should be ready, got %+v", condition)
 	}
 }
 

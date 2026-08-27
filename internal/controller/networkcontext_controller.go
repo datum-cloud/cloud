@@ -38,15 +38,6 @@ import (
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
-const (
-	// fabricIdentityGracePeriod bounds how long a new VPC waits for the identity
-	// the fabric knows its network by before falling back to drawing its own.
-	fabricIdentityGracePeriod = 5 * time.Minute
-
-	// fabricIdentityPollInterval is how often a VPC still waiting looks again.
-	fabricIdentityPollInterval = 10 * time.Second
-)
-
 // NetworkContextReconciler gives a network's presence in one location its
 // data-plane identity: one VPC per NetworkContext, carrying the base62 VPC
 // identifier the whole galactic fabric keys on.
@@ -100,15 +91,18 @@ func (r *NetworkContextReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// Route Target derives from it, so renumbering a live VPC would rename its
 	// interface and change its routes under running traffic.
 	if vpc.Status.VPC == "" {
-		allocated, waiting, err := r.vpcIdentifier(ctx, &networkContext, vpc)
+		identity, found, err := r.fabricIdentity(ctx, &networkContext)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
-		if waiting {
-			return ctrl.Result{RequeueAfter: fabricIdentityPollInterval},
-				r.markAwaitingFabricIdentity(ctx, vpc)
+		if !found {
+			return ctrl.Result{}, r.markAwaitingFabricIdentity(ctx, vpc)
 		}
-		vpc.Status.VPC = allocated
+		encoded, err := identifier.VPCBase62(uint64(identity))
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("encode fabric identity %d for VPC %s: %w", identity, vpc.Name, err)
+		}
+		vpc.Status.VPC = encoded
 	}
 	vpc.Status.ObservedGeneration = vpc.Generation
 	meta.SetStatusCondition(&vpc.Status.Conditions, metav1.Condition{
@@ -125,56 +119,21 @@ func (r *NetworkContextReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	return ctrl.Result{}, nil
 }
 
-// vpcIdentifier resolves the identifier this VPC carries for the rest of its
-// life, and reports whether it is still worth waiting for a better answer.
-//
-// The identity the fabric knows a network by is allocated centrally, once for
-// the whole network, and carried to each cell the network reaches. Deriving the
-// VPC identifier from it is what makes two locations of one network the same
-// network on the fabric; drawing a random value per location, which is what
-// this used to do unconditionally, made them two.
-//
-// The identity may not have landed in this cell yet when the VPC is first
-// reconciled, and the identifier is immutable once written, so a fallback taken
-// too eagerly is permanent. The wait is bounded rather than indefinite, because
-// a network that will never have an identity — one predating the allocator, or
-// one whose central allocation is stuck — has to end up with a working VPC
-// rather than none at all. Past the grace period the old random draw still
-// happens and nothing regresses.
-//
-// The window is measured from the VPC's own creation timestamp, so it survives
-// a controller restart or a change of leader rather than resetting each time.
-func (r *NetworkContextReconciler) vpcIdentifier(
-	ctx context.Context,
-	networkContext *networkingv1alpha.NetworkContext,
-	vpc *cloudv1alpha1.VPC,
-) (string, bool, error) {
-	identity, found, err := r.fabricIdentity(ctx, networkContext)
-	if err != nil {
-		return "", false, err
-	}
-	if found {
-		encoded, err := identifier.VPCBase62(uint64(identity))
-		if err != nil {
-			return "", false, fmt.Errorf("encode fabric identity %d for VPC %s: %w", identity, vpc.Name, err)
-		}
-		return encoded, false, nil
-	}
-
-	// An age that cannot be read reads as new. The fallback is permanent, so the
-	// only safe way to be wrong about it is to wait longer.
-	if vpc.CreationTimestamp.IsZero() ||
-		time.Since(vpc.CreationTimestamp.Time) < fabricIdentityGracePeriod {
-		return "", true, nil
-	}
-
-	allocated, err := r.allocateVPCIdentifier(ctx)
-	return allocated, false, err
-}
-
 // fabricIdentity reads the identity carried to this cell for the context's
 // network. It is one object per network, named after the network, in the
 // network's namespace. A missing one is an ordinary answer, not a failure.
+//
+// The identity is allocated centrally, once for the whole network, and carried
+// to each cell the network reaches. Deriving the VPC identifier from it is what
+// makes two locations of one network the same network on the fabric; drawing a
+// random value per location, which is what this used to do, made them two.
+//
+// A VPC whose identity has not arrived waits, and there is deliberately nothing
+// else it can do. The identifier is immutable, so a random value taken while
+// waiting is permanent, and a network whose locations then disagree is worse
+// than one with no VPC at all: a NetworkService spanning them binds no VRF and
+// fails every request, including through healthy members. Waiting ends the
+// moment the identity lands. A random draw never ends.
 func (r *NetworkContextReconciler) fabricIdentity(
 	ctx context.Context, networkContext *networkingv1alpha.NetworkContext,
 ) (int64, bool, error) {
@@ -253,33 +212,6 @@ func subnetRange(subnet *networkingv1alpha.Subnet) (string, int32, bool) {
 		return subnet.Spec.StartAddress, subnet.Spec.PrefixLength, true
 	}
 	return "", 0, false
-}
-
-// allocateVPCIdentifier draws a random 48-bit identifier not already in use.
-// A single leader-elected controller is the only writer, so a list plus a
-// collision check serializes correctly.
-func (r *NetworkContextReconciler) allocateVPCIdentifier(ctx context.Context) (string, error) {
-	var vpcs cloudv1alpha1.VPCList
-	if err := r.List(ctx, &vpcs); err != nil {
-		return "", fmt.Errorf("list VPCs: %w", err)
-	}
-	used := make(map[string]struct{}, len(vpcs.Items))
-	for _, vpc := range vpcs.Items {
-		if vpc.Status.VPC != "" {
-			used[vpc.Status.VPC] = struct{}{}
-		}
-	}
-
-	for range maxIdentifierAttempts {
-		candidate, err := identifier.RandomVPCBase62()
-		if err != nil {
-			return "", err
-		}
-		if _, taken := used[candidate]; !taken {
-			return candidate, nil
-		}
-	}
-	return "", fmt.Errorf("no unused VPC identifier found after %d attempts", maxIdentifierAttempts)
 }
 
 // SetupWithManager registers the reconciler with the manager.

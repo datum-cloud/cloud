@@ -29,14 +29,6 @@ func TestHexRejectsReservedValues(t *testing.T) {
 
 func TestRandomIdentifiersFitTheirInterfaceNameSegment(t *testing.T) {
 	for range 200 {
-		vpc, err := RandomVPCBase62()
-		if err != nil {
-			t.Fatalf("RandomVPCBase62: %v", err)
-		}
-		if len(vpc) > 9 {
-			t.Errorf("VPC identifier %q exceeds nine base62 characters", vpc)
-		}
-
 		attachment, err := RandomVPCAttachmentBase62()
 		if err != nil {
 			t.Fatalf("RandomVPCAttachmentBase62: %v", err)
@@ -48,9 +40,9 @@ func TestRandomIdentifiersFitTheirInterfaceNameSegment(t *testing.T) {
 }
 
 func TestBase62RoundTrip(t *testing.T) {
-	hex, err := RandomVPC()
+	hex, err := Random(MaxVPC)
 	if err != nil {
-		t.Fatalf("RandomVPC: %v", err)
+		t.Fatalf("Random(MaxVPC): %v", err)
 	}
 	base62, err := HexToBase62(hex)
 	if err != nil {
