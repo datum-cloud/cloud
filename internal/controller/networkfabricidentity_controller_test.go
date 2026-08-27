@@ -20,15 +20,18 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"testing"
 
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 	"go.miloapis.com/ipam/pkg/ipamerrors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -64,6 +67,35 @@ type fakeIdentityIPAM struct {
 
 func allocationNameFor(claimName string) string { return "alloc-" + claimName }
 
+// refuseWhatTheServerWouldRefuse mirrors the address service's own admission of
+// a claim. The fake would otherwise bind anything, which is how a claim that no
+// real server has ever accepted passed every test here.
+//
+// Only the part this depends on is modelled: the server bounds a claim's prefix
+// length by the family stated on the claim, before it looks at the class, so an
+// identity block asked for without a family is read as an IPv4 length.
+func refuseWhatTheServerWouldRefuse(ipClaim *ipamv1alpha1.IPClaim) error {
+	if ipClaim.Spec.ClassName == "" && ipClaim.Spec.IPFamily == "" {
+		return apierrors.NewInvalid(
+			ipamv1alpha1.SchemeGroupVersion.WithKind("IPClaim").GroupKind(), ipClaim.Name,
+			field.ErrorList{field.Required(field.NewPath("spec"),
+				"one of className or ipFamily is required")})
+	}
+	if p := ipClaim.Spec.PrefixLength; p != nil {
+		maxLen := int32(32)
+		if ipClaim.Spec.IPFamily == ipamv1alpha1.IPv6 {
+			maxLen = 128
+		}
+		if *p <= 0 || *p > maxLen {
+			return apierrors.NewInvalid(
+				ipamv1alpha1.SchemeGroupVersion.WithKind("IPClaim").GroupKind(), ipClaim.Name,
+				field.ErrorList{field.Invalid(field.NewPath("spec", "prefixLength"), *p,
+					fmt.Sprintf("must be between 1 and %d", maxLen))})
+		}
+	}
+	return nil
+}
+
 func newFakeIdentityIPAM(t *testing.T) *fakeIdentityIPAM {
 	t.Helper()
 	scheme := runtime.NewScheme()
@@ -79,6 +111,10 @@ func newFakeIdentityIPAM(t *testing.T) *fakeIdentityIPAM {
 				return c.Create(ctx, obj, opts...)
 			}
 			f.created = append(f.created, ipClaim.Name)
+
+			if err := refuseWhatTheServerWouldRefuse(ipClaim); err != nil {
+				return err
+			}
 
 			// An allocation left behind by a deleted claim blocks the name it
 			// used, which is exactly what retention is for.

@@ -118,7 +118,14 @@ func Claim(ctx context.Context, ipamClient client.Client, request Request) (int6
 	ipClaim.Namespace = request.Namespace
 	ipClaim.Name = ClaimName(request.NetworkNamespace, request.NetworkName)
 	ipClaim.Spec = ipamv1alpha1.IPClaimSpec{
-		ClassName:    request.ClassName,
+		ClassName: request.ClassName,
+
+		// The class already fixes the family, but the server bounds a claim's
+		// prefix length from the family on the claim alone, before it resolves
+		// the class at all. Left unset, a /64 is read as an IPv4 length and
+		// refused, so every allocation fails.
+		IPFamily: ipamv1alpha1.IPv6,
+
 		Target:       ipamv1alpha1.TargetBlock,
 		PrefixLength: ptr.To(int32(BlockBits)),
 
