@@ -186,7 +186,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `name` _string_ | Name of the interface (e.g., eth0). |  |  |
-| `mode` _[VPCAttachmentInterfaceMode](#vpcattachmentinterfacemode)_ | Mode is how the workload consumes the interface, resolved and written by<br />the attachment controller rather than by whoever runs the workload. | Netns | Enum: [Netns Hypervisor] <br /> |
+| `mode` _[VPCAttachmentInterfaceMode](#vpcattachmentinterfacemode)_ | Mode is how the workload consumes the interface, resolved and written by<br />the attachment controller rather than by whoever runs the workload. | Netns | Enum: [Netns Hypervisor HypervisorDeclared] <br /> |
 | `addresses` _[IPAddress](#ipaddress) array_ | A list of IPv4 or IPv6 addresses associated with the interface. Empty when<br />the guest manages its own addressing. |  | MaxItems: 16 <br />MaxLength: 64 <br /> |
 
 
@@ -199,7 +199,7 @@ describes the guest, not the data plane, so a change of implementation on the
 data plane side does not move this API.
 
 _Validation:_
-- Enum: [Netns Hypervisor]
+- Enum: [Netns Hypervisor HypervisorDeclared]
 
 _Appears in:_
 - [VPCAttachmentInterface](#vpcattachmentinterface)
@@ -208,6 +208,7 @@ _Appears in:_
 | --- | --- |
 | `Netns` | VPCAttachmentInterfaceModeNetns moves the interface into the workload's<br />network namespace, which is what a container consumes.<br /> |
 | `Hypervisor` | VPCAttachmentInterfaceModeHypervisor hands the interface to a hypervisor as<br />a device, which is what a virtual machine guest consumes.<br /> |
+| `HypervisorDeclared` | VPCAttachmentInterfaceModeHypervisorDeclared also hands the interface to a<br />hypervisor as a device. It differs from Hypervisor in who tells the<br />hypervisor that the device exists. Under Hypervisor the hypervisor finds<br />the device from what the node publishes. Under HypervisorDeclared the data<br />plane states the device, its addresses, and its MTU to the hypervisor<br />directly, which is what a guest whose hypervisor reads no node state<br />needs.<br /> |
 
 
 #### VPCAttachmentSpec

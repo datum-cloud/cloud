@@ -70,7 +70,7 @@ type IPAddress string
 // VPCAttachmentInterfaceMode is how the workload consumes the interface. It
 // describes the guest, not the data plane, so a change of implementation on the
 // data plane side does not move this API.
-// +kubebuilder:validation:Enum=Netns;Hypervisor
+// +kubebuilder:validation:Enum=Netns;Hypervisor;HypervisorDeclared
 type VPCAttachmentInterfaceMode string
 
 const (
@@ -81,6 +81,15 @@ const (
 	// VPCAttachmentInterfaceModeHypervisor hands the interface to a hypervisor as
 	// a device, which is what a virtual machine guest consumes.
 	VPCAttachmentInterfaceModeHypervisor VPCAttachmentInterfaceMode = "Hypervisor"
+
+	// VPCAttachmentInterfaceModeHypervisorDeclared also hands the interface to a
+	// hypervisor as a device. It differs from Hypervisor in who tells the
+	// hypervisor that the device exists. Under Hypervisor the hypervisor finds
+	// the device from what the node publishes. Under HypervisorDeclared the data
+	// plane states the device, its addresses, and its MTU to the hypervisor
+	// directly, which is what a guest whose hypervisor reads no node state
+	// needs.
+	VPCAttachmentInterfaceModeHypervisorDeclared VPCAttachmentInterfaceMode = "HypervisorDeclared"
 )
 
 // VPCAttachmentInterface defines the network interface details.

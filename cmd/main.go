@@ -65,7 +65,7 @@ func main() {
 	flag.BoolVar(&enableLeaderElection, "leader-elect", true,
 		"Enable leader election. A single writer is what makes identifier allocation safe.")
 	flag.StringVar(&rawAttachmentMode, "attachment-mode", "",
-		"Required. How guests in this cell consume an interface: Netns or Hypervisor.")
+		"Required. How guests in this cell consume an interface, for any interface that states no mode of its own: Netns, Hypervisor or HypervisorDeclared.")
 	flag.IntVar(&webhookPort, "webhook-port", 9443, "Port the admission webhook server binds to.")
 	flag.StringVar(&webhookCertDir, "webhook-cert-dir", "/tmp/k8s-webhook-server/serving-certs",
 		"Directory holding the webhook server's tls.crt and tls.key.")
@@ -160,9 +160,11 @@ func parseAttachmentMode(value string) (cloudv1alpha1.VPCAttachmentInterfaceMode
 		return cloudv1alpha1.VPCAttachmentInterfaceModeNetns, nil
 	case cloudv1alpha1.VPCAttachmentInterfaceModeHypervisor:
 		return cloudv1alpha1.VPCAttachmentInterfaceModeHypervisor, nil
+	case cloudv1alpha1.VPCAttachmentInterfaceModeHypervisorDeclared:
+		return cloudv1alpha1.VPCAttachmentInterfaceModeHypervisorDeclared, nil
 	case "":
 		return "", errors.New("--attachment-mode is required: set Netns for container cells or Hypervisor for microVM cells")
 	default:
-		return "", fmt.Errorf("--attachment-mode %q is not one of Netns, Hypervisor", value)
+		return "", fmt.Errorf("--attachment-mode %q is not one of Netns, Hypervisor, HypervisorDeclared", value)
 	}
 }

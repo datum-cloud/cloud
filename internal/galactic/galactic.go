@@ -83,7 +83,12 @@ type MasterPlugin struct {
 	VPCAttachment string `json:"vpcattachment"`
 	Namespace     string `json:"namespace"`
 	MTU           int32  `json:"mtu,omitempty"`
-	IPAM          *IPAM  `json:"ipam,omitempty"`
+	// DAN asks the tap plugin to describe the device to the hypervisor in a
+	// file the hypervisor reads, rather than leaving it to be discovered from
+	// the node. Only the tap plugin reads it, and it is omitted when false so
+	// every conflist rendered until now is byte-identical.
+	DAN  bool  `json:"dan,omitempty"`
+	IPAM *IPAM `json:"ipam,omitempty"`
 }
 
 // BGPPlugin is the galactic-bgp stanza. It is never optional: the master plugin
@@ -112,14 +117,16 @@ type Address struct {
 
 // Conflist renders the conflist for one attachment. Addresses are the addresses
 // NSO already allocated; an empty list means the guest addresses itself and no
-// IPAM block is emitted.
-func Conflist(name, plugin, vpc, vpcAttachment string, mtu int32, addresses []Address) NetConfList {
+// IPAM block is emitted. Set dan for a guest whose hypervisor is handed the
+// device rather than discovering it.
+func Conflist(name, plugin, vpc, vpcAttachment string, mtu int32, addresses []Address, dan bool) NetConfList {
 	master := MasterPlugin{
 		Type:          plugin,
 		VPC:           vpc,
 		VPCAttachment: vpcAttachment,
 		Namespace:     SystemNamespace,
 		MTU:           mtu,
+		DAN:           dan,
 	}
 	if len(addresses) > 0 {
 		master.IPAM = &IPAM{Type: PluginIPAM, Addresses: addresses}
@@ -135,8 +142,8 @@ func Conflist(name, plugin, vpc, vpcAttachment string, mtu int32, addresses []Ad
 }
 
 // ConflistJSON renders the conflist as the string a NAD's spec.config holds.
-func ConflistJSON(name, plugin, vpc, vpcAttachment string, mtu int32, addresses []Address) (string, error) {
-	raw, err := json.Marshal(Conflist(name, plugin, vpc, vpcAttachment, mtu, addresses))
+func ConflistJSON(name, plugin, vpc, vpcAttachment string, mtu int32, addresses []Address, dan bool) (string, error) {
+	raw, err := json.Marshal(Conflist(name, plugin, vpc, vpcAttachment, mtu, addresses, dan))
 	if err != nil {
 		return "", fmt.Errorf("marshal CNI conflist: %w", err)
 	}

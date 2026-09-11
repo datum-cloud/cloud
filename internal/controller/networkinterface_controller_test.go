@@ -34,6 +34,7 @@ func TestMasterPlugin(t *testing.T) {
 	}{
 		{cloudv1alpha1.VPCAttachmentInterfaceModeNetns, galactic.PluginVeth},
 		{cloudv1alpha1.VPCAttachmentInterfaceModeHypervisor, galactic.PluginTap},
+		{cloudv1alpha1.VPCAttachmentInterfaceModeHypervisorDeclared, galactic.PluginTap},
 	}
 	for _, test := range tests {
 		t.Run(string(test.mode), func(t *testing.T) {
@@ -81,5 +82,48 @@ func TestClaimFulfilled(t *testing.T) {
 				t.Errorf("got %v, want %v", got, test.want)
 			}
 		})
+	}
+}
+
+// The cell-wide mode is the only signal every attachment written until now
+// carries, so it has to keep deciding for all of them. An interface that
+// states its own mode is the exception.
+func TestAttachmentModeFallsBackToTheCell(t *testing.T) {
+	r := &NetworkInterfaceReconciler{
+		AttachmentMode: cloudv1alpha1.VPCAttachmentInterfaceModeNetns,
+	}
+
+	tests := []struct {
+		name  string
+		iface networkingv1alpha.NetworkInterfaceAttachmentMode
+		want  cloudv1alpha1.VPCAttachmentInterfaceMode
+	}{
+		{"unset", "", cloudv1alpha1.VPCAttachmentInterfaceModeNetns},
+		{"netns", networkingv1alpha.NetworkInterfaceAttachmentModeNetns,
+			cloudv1alpha1.VPCAttachmentInterfaceModeNetns},
+		{"hypervisor", networkingv1alpha.NetworkInterfaceAttachmentModeHypervisor,
+			cloudv1alpha1.VPCAttachmentInterfaceModeHypervisor},
+		{"declared", networkingv1alpha.NetworkInterfaceAttachmentModeHypervisorDeclared,
+			cloudv1alpha1.VPCAttachmentInterfaceModeHypervisorDeclared},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			networkInterface := &networkingv1alpha.NetworkInterface{
+				Spec: networkingv1alpha.NetworkInterfaceSpec{AttachmentMode: test.iface},
+			}
+			if got := r.attachmentMode(networkInterface); got != test.want {
+				t.Errorf("got %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+// Only the declared mode asks the tap plugin to describe the device.
+func TestDeclaresDevice(t *testing.T) {
+	if declaresDevice(cloudv1alpha1.VPCAttachmentInterfaceModeHypervisor) {
+		t.Error("a discovered hypervisor attachment must not ask for a description")
+	}
+	if !declaresDevice(cloudv1alpha1.VPCAttachmentInterfaceModeHypervisorDeclared) {
+		t.Error("a declared hypervisor attachment must ask for a description")
 	}
 }
