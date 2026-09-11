@@ -125,8 +125,8 @@ go.datum.net/compute v0.8.0-dev.7.0.20260821003916-1a0e4d6443f0 h1:EDzArN7AXyfWz
 go.datum.net/compute v0.8.0-dev.7.0.20260821003916-1a0e4d6443f0/go.mod h1:HEyoohOD3mQxkUsnlDIgRrh9L9P8j7nVtiFB1+utIAA=
 go.datum.net/network v0.0.0-20260819160013-45d0ff9deaee h1:7tA+0C1pb/fu/wrgB3Vu+P3nOJK4aNnKaUeB5wzrxVY=
 go.datum.net/network v0.0.0-20260819160013-45d0ff9deaee/go.mod h1:dqzM8WZczbiZ9bCvsxjkoI10GJqQ24NVWnc9boXgOkE=
-go.datum.net/network-services-operator v0.26.1-0.20260820201844-f366b960529b h1:Qkh/+0XW+JXVXx89H/vyG1KBl+I0jLnKNiQSB8UgUQA=
-go.datum.net/network-services-operator v0.26.1-0.20260820201844-f366b960529b/go.mod h1:A7JNOuc+e6j/KkUVCcZ7Z2odvf6JFMQlX0Zo1Awj2TY=
+go.datum.net/network-services-operator v0.26.5-0.20260911224752-0ac10aee98bb h1:vNXRwZC6cozozlH+DvMjm9Ck5TdvM0fjwgDJ2m1VPrY=
+go.datum.net/network-services-operator v0.26.5-0.20260911224752-0ac10aee98bb/go.mod h1:9nuuBWdrkdnIBMaWJsWM3j4CcbKJIF1GDuCmAjdpIHo=
 go.uber.org/goleak v1.3.0 h1:2K3zAYmnTNqV73imy9J1T3WC+gmCePx2hEGkimedGto=
 go.uber.org/goleak v1.3.0/go.mod h1:CoHD4mav9JJNrW/WLlf7HGZPjdw8EucARQHekz1X6bE=
 go.uber.org/multierr v1.11.0 h1:blXXJkSxSSfBVBlC76pxqeO+LN3aDfLQo+309xJstO0=

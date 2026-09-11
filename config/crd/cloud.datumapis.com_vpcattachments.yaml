@@ -61,6 +61,7 @@ spec:
                     enum:
                     - Netns
                     - Hypervisor
+                    - HypervisorDeclared
                     type: string
                   name:
                     default: eth0

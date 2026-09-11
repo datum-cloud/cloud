@@ -27,7 +27,7 @@ func TestConflistChainIsComplete(t *testing.T) {
 		[]Address{
 			{Address: "fd00:10:ff01:0:1::1/96", Gateway: "fd00:10:ff01::1"},
 			{Address: "172.20.1.7/32", Gateway: "172.20.1.1"},
-		})
+		}, false)
 
 	if conflist.CNIVersion != "1.0.0" {
 		t.Errorf("cniVersion: got %q, want %q", conflist.CNIVersion, "1.0.0")
@@ -64,7 +64,7 @@ func TestConflistChainIsComplete(t *testing.T) {
 }
 
 func TestConflistOmitsIPAMForSelfAddressingGuest(t *testing.T) {
-	raw, err := ConflistJSON("web-eth0", PluginTap, "0000000jU", "01a", 0, nil)
+	raw, err := ConflistJSON("web-eth0", PluginTap, "0000000jU", "01a", 0, nil, false)
 	if err != nil {
 		t.Fatalf("ConflistJSON: %v", err)
 	}
@@ -125,4 +125,36 @@ func TestSplitAdvertisementName(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The tap plugin reads this one field to decide whether it describes the device
+// to the hypervisor. Every attachment rendered until now leaves it out, so its
+// absence has to stay the default.
+func TestConflistCarriesTheDeclaredDeviceRequest(t *testing.T) {
+	declared, err := ConflistJSON("vm-eth0", PluginTap, "0000000jU", "01a", 1400, nil, true)
+	if err != nil {
+		t.Fatalf("ConflistJSON: %v", err)
+	}
+	discovered, err := ConflistJSON("vm-eth0", PluginTap, "0000000jU", "01a", 1400, nil, false)
+	if err != nil {
+		t.Fatalf("ConflistJSON: %v", err)
+	}
+
+	if got := masterStanza(t, declared)["dan"]; got != true {
+		t.Errorf("declared attachment: got %v, want true", got)
+	}
+	if _, present := masterStanza(t, discovered)["dan"]; present {
+		t.Errorf("discovered attachment carries the field: %s", discovered)
+	}
+}
+
+func masterStanza(t *testing.T, raw string) map[string]any {
+	t.Helper()
+	var decoded struct {
+		Plugins []map[string]any `json:"plugins"`
+	}
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		t.Fatalf("unmarshal conflist: %v", err)
+	}
+	return decoded.Plugins[0]
 }

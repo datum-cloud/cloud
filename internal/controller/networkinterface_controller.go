@@ -75,7 +75,8 @@ type NetworkInterfaceReconciler struct {
 
 	// AttachmentMode is how guests in this cell consume an interface. It is
 	// required configuration standing in for a capability class that does not
-	// exist yet, so a cell states what it is rather than defaulting.
+	// exist yet, so a cell states what it is rather than defaulting. It covers
+	// every interface that states no mode of its own.
 	AttachmentMode cloudv1alpha1.VPCAttachmentInterfaceMode
 }
 
@@ -158,7 +159,7 @@ func (r *NetworkInterfaceReconciler) reconcileAttachment(
 		attachment.Spec.VPC = cloudv1alpha1.VPCRef{Name: vpc.Name}
 		attachment.Spec.InterfaceRef = &cloudv1alpha1.NetworkInterfaceRef{Name: networkInterface.Name}
 		attachment.Spec.Interface.Name = networkInterface.Spec.InterfaceName
-		attachment.Spec.Interface.Mode = r.AttachmentMode
+		attachment.Spec.Interface.Mode = r.attachmentMode(networkInterface)
 		attachment.Spec.Interface.Addresses = interfaceAddresses(networkInterface)
 		return controllerutil.SetControllerReference(networkInterface, attachment, r.Scheme)
 	}); err != nil {
@@ -200,7 +201,8 @@ func (r *NetworkInterfaceReconciler) reconcileNAD(
 		})
 	}
 	config, err := galactic.ConflistJSON(attachment.Name, masterPlugin(attachment.Spec.Interface.Mode),
-		vpc.Status.VPC, attachmentID, networkInterface.Spec.MTU, addresses)
+		vpc.Status.VPC, attachmentID, networkInterface.Spec.MTU, addresses,
+		declaresDevice(attachment.Spec.Interface.Mode))
 	if err != nil {
 		return nil, err
 	}
@@ -219,13 +221,41 @@ func (r *NetworkInterfaceReconciler) reconcileNAD(
 	return nad, nil
 }
 
+// attachmentMode resolves how one guest consumes its interface. An interface
+// that states a mode carries the workload's own requirement, so it wins. The
+// cell-wide mode covers everything else, which is every interface written
+// before a workload could state one.
+func (r *NetworkInterfaceReconciler) attachmentMode(
+	networkInterface *networkingv1alpha.NetworkInterface,
+) cloudv1alpha1.VPCAttachmentInterfaceMode {
+	switch networkInterface.Spec.AttachmentMode {
+	case networkingv1alpha.NetworkInterfaceAttachmentModeNetns:
+		return cloudv1alpha1.VPCAttachmentInterfaceModeNetns
+	case networkingv1alpha.NetworkInterfaceAttachmentModeHypervisor:
+		return cloudv1alpha1.VPCAttachmentInterfaceModeHypervisor
+	case networkingv1alpha.NetworkInterfaceAttachmentModeHypervisorDeclared:
+		return cloudv1alpha1.VPCAttachmentInterfaceModeHypervisorDeclared
+	default:
+		return r.AttachmentMode
+	}
+}
+
 // masterPlugin translates how a guest consumes an interface into the galactic
 // binary that realizes it. This is the only place the two vocabularies meet.
 func masterPlugin(mode cloudv1alpha1.VPCAttachmentInterfaceMode) string {
-	if mode == cloudv1alpha1.VPCAttachmentInterfaceModeHypervisor {
+	switch mode {
+	case cloudv1alpha1.VPCAttachmentInterfaceModeHypervisor,
+		cloudv1alpha1.VPCAttachmentInterfaceModeHypervisorDeclared:
 		return galactic.PluginTap
+	default:
+		return galactic.PluginVeth
 	}
-	return galactic.PluginVeth
+}
+
+// declaresDevice reports whether the tap plugin describes the device to the
+// hypervisor instead of leaving the hypervisor to discover it.
+func declaresDevice(mode cloudv1alpha1.VPCAttachmentInterfaceMode) bool {
+	return mode == cloudv1alpha1.VPCAttachmentInterfaceModeHypervisorDeclared
 }
 
 // interfaceAddresses copies the addresses NSO allocated onto the attachment, so
