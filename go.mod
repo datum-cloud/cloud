@@ -7,6 +7,11 @@ require (
 	github.com/kenshaw/baseconv v0.1.1
 	go.datum.net/compute v0.8.0-dev.7.0.20260821003916-1a0e4d6443f0
 	go.datum.net/network v0.0.0-20260819160013-45d0ff9deaee
+	// UNMERGED: pinned to the head of network-services-operator#450, which
+	// adds the HypervisorDeclared attachment mode this repo now acts on. The
+	// commit sits on top of main and carries nothing else. That branch may be
+	// force-pushed or deleted, which would break `go mod download` here, so
+	// re-pin to a main commit or a tag as soon as it merges.
 	go.datum.net/network-services-operator v0.26.5-0.20260911224752-0ac10aee98bb
 	go.miloapis.com/ipam v0.3.2-0.20260813184449-4fac0aa96194
 	k8s.io/api v0.36.3
