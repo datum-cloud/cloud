@@ -119,6 +119,18 @@ func TestAttachmentModeFallsBackToTheCell(t *testing.T) {
 }
 
 // Only the declared mode asks the tap plugin to describe the device.
+// TestHostInterfaceAnnotationKey pins the annotation key this controller writes
+// on the NAD. The key is a contract with the data plane: galactic writes the
+// same one during CNI ADD, and a runtime reads it to learn its host device.
+// Renaming it here alone would leave that runtime with nothing to read, and
+// nothing else in this repository would fail.
+func TestHostInterfaceAnnotationKey(t *testing.T) {
+	const want = "k8s.v1.cni.cncf.io/host-interface"
+	if AnnotationHostInterface != want {
+		t.Errorf("AnnotationHostInterface = %q, want %q", AnnotationHostInterface, want)
+	}
+}
+
 func TestDeclaresDevice(t *testing.T) {
 	if declaresDevice(cloudv1alpha1.VPCAttachmentInterfaceModeHypervisor) {
 		t.Error("a discovered hypervisor attachment must not ask for a description")

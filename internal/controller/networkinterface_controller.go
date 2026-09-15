@@ -47,6 +47,15 @@ const (
 	// The NAD is the allocation record for that identifier.
 	LabelVPCAttachment = "cloud.datumapis.com/vpc-attachment"
 
+	// AnnotationHostInterface records the host device this attachment will get,
+	// on the NAD, at the moment the NAD is written. The name is derived from the
+	// VPC and the attachment identifier, so it is known here — well before the
+	// CNI ADD that creates the device. A runtime that must name the device when
+	// it asks for an interface, rather than learn it from the ADD result, has
+	// nowhere else to read it in time. galactic writes the same key during ADD
+	// from the same inputs, so the two always agree.
+	AnnotationHostInterface = "k8s.v1.cni.cncf.io/host-interface"
+
 	// ConditionTypePrepared reports that the data plane's pre-Pod artifacts exist.
 	// Unlike Programmed, which only becomes true at CNI ADD, it is safe to gate
 	// Pod creation on. network-services-operator is adding the type in parallel.
@@ -213,6 +222,10 @@ func (r *NetworkInterfaceReconciler) reconcileNAD(
 		}
 		nad.Labels[LabelVPC] = vpc.Status.VPC
 		nad.Labels[LabelVPCAttachment] = attachmentID
+		if nad.Annotations == nil {
+			nad.Annotations = map[string]string{}
+		}
+		nad.Annotations[AnnotationHostInterface] = galactic.HostInterfaceName(vpc.Status.VPC, attachmentID)
 		nad.Spec.Config = config
 		return controllerutil.SetControllerReference(attachment, nad, r.Scheme)
 	}); err != nil {
