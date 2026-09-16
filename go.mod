@@ -8,7 +8,7 @@ require (
 	go.datum.net/compute v0.8.0
 	go.datum.net/network v0.1.0
 	go.datum.net/network-services-operator v0.27.0
-	go.miloapis.com/ipam v0.3.2-0.20260813184449-4fac0aa96194
+	go.miloapis.com/ipam v0.4.0
 	k8s.io/api v0.36.3
 	k8s.io/apimachinery v0.36.3
 	k8s.io/client-go v0.36.3
@@ -79,4 +79,4 @@ require (
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
 
-replace go.miloapis.com/ipam => github.com/milo-os/ipam v0.3.2-0.20260819234259-2f31bea79f62
+replace go.miloapis.com/ipam => github.com/milo-os/ipam v0.4.0
