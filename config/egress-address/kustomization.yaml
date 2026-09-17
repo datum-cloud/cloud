@@ -1,0 +1,36 @@
+# The claimer of an egress shard's public address. It runs in the cell, beside
+# the shards it writes, which is what separates it from the fabric identity
+# overlay next door: a network spans locations and its identity cannot be
+# decided in any one of them, while a shard names the Node it executes on and
+# exists only where that Node does.
+#
+# It is its own overlay rather than a reconciler inside the cell manager because
+# it holds a credential the cell manager does not. The cell manager writes the
+# attachment state of every workload here and serves an admission webhook;
+# giving that pod a credential into the platform's own tenancy widens the blast
+# radius of the one component a cell cannot run without, and an address
+# credential that expired would stop workloads attaching. Split out, an address
+# that cannot be claimed costs new shards their addresses and nothing else.
+#
+# RBAC comes from ../rbac unchanged. The repo generates one ClusterRole from
+# every marker under ./internal/..., so every role this image runs shares a role
+# and a ServiceAccount name.
+#
+# The EgressShard CRD is not included here. It belongs to
+# go.datum.net/network and is installed by the data plane that owns it, not by
+# a consumer of it.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: egress-address-system
+resources:
+  - ../rbac
+components:
+  - ../components/egress-address
+
+# Pinned here rather than inherited from ../manager: this overlay does not
+# include it, and the publish workflow rewrites the tag in every overlay it is
+# given.
+images:
+  - name: ghcr.io/datum-cloud/vpc-controller
+    newName: ghcr.io/datum-cloud/vpc-controller
+    newTag: latest

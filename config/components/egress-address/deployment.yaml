@@ -1,0 +1,118 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: egress-address-controller
+  namespace: system
+  labels:
+    app.kubernetes.io/name: egress-address-controller
+    app.kubernetes.io/component: egress-address-controller
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  # A shard's address is decided once and cannot be reassigned. Leader election
+  # is what keeps that true across a rollout; the replica count is not.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: egress-address-controller
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: manager
+      labels:
+        app.kubernetes.io/name: egress-address-controller
+        app.kubernetes.io/component: egress-address-controller
+    spec:
+      serviceAccountName: vpc-controller
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: manager
+          image: ghcr.io/datum-cloud/vpc-controller
+          command:
+            - /egress-address-controller
+          # Args reference env vars so an overlay can retarget any value with a
+          # strategic-merge patch on env, matched by name, instead of rewriting
+          # the args list.
+          args:
+            - --leader-elect
+            - --health-probe-bind-address=:8081
+            - --metrics-bind-address=:8080
+            - --address-class-ipv6=$(ADDRESS_CLASS_IPV6)
+            - --claim-namespace=$(CLAIM_NAMESPACE)
+            - --location=$(LOCATION)
+            - --platform-project=$(PLATFORM_PROJECT)
+            - --ipam-kubeconfig=/etc/ipam-cluster/kubeconfig
+          env:
+            # The class that hands out shard addresses. Required; a deployment
+            # naming no class refuses to start rather than draw from a default
+            # that would hand a shard a private address nothing routes.
+            - name: ADDRESS_CLASS_IPV6
+              value: datum-egress-shard-address-ipv6
+            - name: CLAIM_NAMESPACE
+              value: default
+            # The location this cell serves, which must equal the cell's own
+            # topology.datum.net/location label. Required and deployment
+            # specific: a cell claiming under another location's name is handed
+            # an address that location's fabric attracts, and the assignment
+            # cannot be taken back.
+            - name: LOCATION
+              value: ""
+            # A shard's address is not a consumer's address, so the claim is
+            # written in a project the platform owns. Required and
+            # deployment-specific.
+            - name: PLATFORM_PROJECT
+              value: ""
+          ports:
+            - name: metrics
+              containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          volumeMounts:
+            - name: ipam-cluster-kubeconfig
+              mountPath: /etc/ipam-cluster
+              readOnly: true
+      volumes:
+        # Not optional. This component does one thing and cannot do it without
+        # the address service. A pod waiting in ContainerCreating for a
+        # credential that has not landed says so plainly; one started against an
+        # empty dir crashloops until the kubelet's next volume resync, which
+        # reads as a broken image rather than a missing secret.
+        #
+        # There is deliberately no second mount. Unlike the central fabric
+        # identity controller, everything this reads and writes in the cluster
+        # is local: an EgressShard names a Node, so it never exists anywhere but
+        # the cell holding that Node.
+        #
+        # This credential authenticates to the platform's own project, which is
+        # the tenancy holding every platform-owned allocation. It must be scoped
+        # to this component's job and no more -- "use" on the one address class
+        # and write access to IPClaims in the one namespace -- because a cell is
+        # the least trusted cluster in the fleet and there is one of these
+        # credentials per cell.
+        - name: ipam-cluster-kubeconfig
+          secret:
+            secretName: ipam-cluster-kubeconfig
+      terminationGracePeriodSeconds: 10

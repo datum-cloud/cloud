@@ -1,0 +1,167 @@
+# The public IPv6 space an egress shard's translation address is drawn from,
+# consumed by egress-address-controller.
+#
+# APPLY DESTINATION. This is platform-project IPAM content. Its sibling — the
+# fabric identity space in infra's
+# apps/network-services-operator/platform-project/fabric-identity.yaml — is
+# applied from infra by the installer scoped to the `datum-cloud` project, and
+# this belongs beside it. It is authored here because the controller that reads
+# it is here; moving it is an open item, not a second home.
+#
+# IPv4 IS DELIBERATELY ABSENT. A shard performs NAT64 only when its spec carries
+# both an IPv4 address and a NAT64 prefix, and the platform pairs no resolver
+# with a translator yet, so an IPv4 egress address would be reachability the API
+# reports and the data plane does not deliver. The register that would say which
+# public IPv4 prefix is egress space also still reads `status: TODO` throughout
+# (infra/network/ipam/ipv4.yaml). Defining the IPv4 half when both are settled
+# costs one commit; defining it now is a permanent choice made to avoid a gap.
+#
+# NOTHING HERE CAN BE CORRECTED IN PLACE. `uniqueWithin` and `poolPer` are
+# rejected on update, and a pool's `spec.cidr` is carried by every allocation
+# beneath it. Read the note on each field before changing one.
+
+# ---------------------------------------------------------------------------
+# The aggregate. One root pool, carved into one /48 per location.
+# ---------------------------------------------------------------------------
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: datum-egress-shard-ipv6-root
+spec:
+  # REQUIRED, AND DELIBERATELY EMPTY. The service refuses a root pool with no
+  # CIDR, so applying this file unedited is rejected rather than seeding a
+  # permanent aggregate from a plausible-looking guess. That is the same reason
+  # PLATFORM_PROJECT ships empty in the deployment beside it.
+  #
+  # The value must be a /40 inside the platform's public supernet
+  # 2607:ed40::/32 that overlaps no entry in infra/network/ipam/ipv6.yaml. A /40
+  # carves 256 locations at the /48 below; the platform serves 16 today.
+  #
+  # Assigning it is a human decision that has not been made. Every entry in that
+  # register reads `status: TODO` and the file is marked a draft for review, so
+  # no prefix in it can be read as free. Record the assignment there first, then
+  # set it here.
+  cidr: ""
+  ipFamily: IPv6
+  visibility: shared
+  # The chain ROOT, never the leaf. A pool naming the leaf would hand an
+  # interface the whole aggregate.
+  classNames:
+    - datum-egress-shard-ipv6
+  allocation:
+    # Fixed at the per-location carve. A pool free to hand out other sizes would
+    # let one location take space sized for several.
+    minPrefixLength: 48
+    maxPrefixLength: 48
+    strategy: FirstFit
+
+# ---------------------------------------------------------------------------
+# The per-location range. This class provisions the pools; it binds nothing.
+# ---------------------------------------------------------------------------
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: datum-egress-shard-ipv6
+spec:
+  ipFamily: IPv6
+  # One pool per location, shared by every cell and every consumer in it.
+  #
+  # Keyed on location rather than on cell because two cells already serve one
+  # location: us-central-1 and us-east-1 each carry two clusters labelled
+  # topology.datum.net/location with the same value. Keying on the cell would
+  # give one physical site two announceable aggregates, and would need a `cell`
+  # scope role that no class in the platform defines, where `location` is
+  # already the role every other claim carries.
+  #
+  # `project` is deliberately absent, which is what makes this shared. A shard's
+  # address serves every network the class places on it, and per-consumer blocks
+  # would exhaust a public aggregate after one block per project instead of one
+  # per location. IMMUTABLE: a class that separated per consumer could not be
+  # corrected, only replaced.
+  poolPer:
+    - location
+  # Empty: one address space platform-wide. Two shards must never hold one
+  # address — the datapath claims a reply by exact match against the address it
+  # translates to, so two holders split each other's return traffic. Emptiness
+  # makes the space tenant-free, and the constraint that enforces it is a
+  # database exclusion over (pool, address space, prefix), not Go.
+  #
+  # The shard is deliberately NOT in this scope. Naming it would make each shard
+  # its own address space and let two shards be handed the same address, which
+  # is the exact failure the field exists to prevent.
+  uniqueWithin: []
+  # The size of the range each location holds. A /48 is the granularity the
+  # platform's own register already assigns public space at per site, and it is
+  # the unit that can be announced: prefixes longer than /48 are widely
+  # filtered, so a smaller carve would hold addresses nothing outside the site
+  # could route to. The space a /48 wastes on a handful of shards costs nothing
+  # in IPv6; an unannounceable egress range costs the feature.
+  allowedPrefixLengths:
+    min: 48
+    max: 48
+  defaultPrefixLength: 48
+  # The /48 leaves the location as one route; the addresses inside it never
+  # appear outside it. An aggregate must be originated with a discard route —
+  # see the dependency note at the foot of this file, because nothing originates
+  # it today.
+  routing:
+    external: Aggregate
+  # Governs a ScopeRange claim of this class, and nothing makes one: the first
+  # shard's address claim provisions the location's /48 through the cascade. It
+  # is stated so that a range later claimed directly is not released by default,
+  # and it is inert until something claims one.
+  reclaimPolicy: Retain
+
+# ---------------------------------------------------------------------------
+# The address. This is the class a shard's claim names.
+# ---------------------------------------------------------------------------
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: datum-egress-shard-address-ipv6
+  # No is-default-class marker. This space is reached only by naming it: a claim
+  # that landed here by default would be handed a public address, and the
+  # platform's default IPv6 class hands out private endpoint space.
+spec:
+  ipFamily: IPv6
+  parentClassName: datum-egress-shard-ipv6
+  # No poolPer: this is the leaf. It provisions nothing and binds addresses
+  # directly inside the /48 its parent carved for the location.
+  uniqueWithin: []
+  # Exactly one address. A shard translates to a single address and the datapath
+  # matches it exactly, so a block would hand the shard space it cannot use and
+  # hold the rest out of circulation with nothing reporting the difference.
+  allowedPrefixLengths:
+    min: 128
+    max: 128
+  defaultPrefixLength: 128
+  # Freed when the claim goes, which happens only when the shard it is named for
+  # is gone.
+  #
+  # NOT Retain. A shard holding the wrong address is fixed by deleting and
+  # recreating the shard, because the address in its spec is write-once. Under
+  # Retain the recreated shard is handed the same address back, so the only
+  # remedy the API leaves for a wrong address would silently not work. Retain
+  # also never returns the address at all: the service implements no lease
+  # expiry, so a retained allocation outlives the decommissioned node forever
+  # and an announceable aggregate is scarce enough for that to matter. Reissuing
+  # an address costs nothing a consumer was promised — this class is shared, so
+  # the address is reported as one nobody may rely on or allow-list.
+  reclaimPolicy: Delete
+  # A distinct route inside the location, reached by the shard's own
+  # advertisement into the fabric.
+  routing:
+    internal: Host
+
+# ---------------------------------------------------------------------------
+# WHAT THIS DOES NOT DELIVER
+#
+# Nothing announces the per-location /48. The shard's own address becomes
+# reachable inside its location by the advertisement the shard makes into the
+# fabric; the aggregate leaving the location toward the internet is an upstream
+# announcement, paired with a discard route, that no component here originates.
+# Until it exists, a shard holds a correctly allocated address that the internet
+# cannot reply to.
+# ---------------------------------------------------------------------------

@@ -1,0 +1,6 @@
+# Operator-applied IPAM content, not part of any deployment overlay. It is
+# listed so the file is built and validated rather than only linted.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - egress-shard-ipv6.yaml

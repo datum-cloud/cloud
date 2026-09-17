@@ -76,6 +76,16 @@ rules:
   - list
   - watch
 - apiGroups:
+  - network.datumapis.com
+  resources:
+  - egressshards
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - networking.datumapis.com
   resources:
   - networkcontexts
