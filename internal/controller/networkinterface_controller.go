@@ -154,15 +154,23 @@ func (r *NetworkInterfaceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, fmt.Errorf("get NetworkContext %s: %w", vpcKey, err)
 	}
 
+	// Resolved once for the whole pass. The conflist the node reads and the
+	// address a consumer reads back have to be the same answer, and resolving
+	// twice could produce two.
+	egress, err := r.resolveInternetEgress(ctx, &networkContext)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
 	attachment, err := r.reconcileAttachment(ctx, &networkInterface, &vpc)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	nad, err := r.reconcileNAD(ctx, attachment, &vpc, &networkInterface, &networkContext)
+	nad, err := r.reconcileNAD(ctx, attachment, &vpc, &networkInterface, egress)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := r.publishAttachmentStatus(ctx, attachment, &vpc, nad); err != nil {
+	if err := r.publishAttachmentStatus(ctx, attachment, &vpc, nad, egress); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, r.publishToInterface(ctx, &networkInterface, attachment, &vpc)
@@ -209,7 +217,7 @@ func (r *NetworkInterfaceReconciler) reconcileNAD(
 	attachment *cloudv1alpha1.VPCAttachment,
 	vpc *cloudv1alpha1.VPC,
 	networkInterface *networkingv1alpha.NetworkInterface,
-	networkContext *networkingv1alpha.NetworkContext,
+	egress *internetEgress,
 ) (*nadv1.NetworkAttachmentDefinition, error) {
 	nad := &nadv1.NetworkAttachmentDefinition{
 		ObjectMeta: metav1.ObjectMeta{Name: attachment.Name, Namespace: attachment.Namespace},
@@ -236,13 +244,9 @@ func (r *NetworkInterfaceReconciler) reconcileNAD(
 			Gateway: address.Gateway,
 		})
 	}
-	egress, err := r.resolveInternetEgress(ctx, networkContext)
-	if err != nil {
-		return nil, err
-	}
 	config, err := galactic.ConflistJSON(attachment.Name, masterPlugin(attachment.Spec.Interface.Mode),
 		vpc.Status.VPC, attachmentID, networkInterface.Spec.MTU, addresses,
-		declaresDevice(attachment.Spec.Interface.Mode), egress)
+		declaresDevice(attachment.Spec.Interface.Mode), egress.conflist())
 	if err != nil {
 		return nil, err
 	}
@@ -312,10 +316,48 @@ func interfaceAddresses(networkInterface *networkingv1alpha.NetworkInterface) []
 	return addresses
 }
 
+// internetEgress is what one location's egress intent resolved to: the
+// candidates a node routes toward, and the address a consumer reads back.
+//
+// A nil internetEgress is a network that reaches nothing outside the platform.
+// It is not an empty one: absence is the instruction, in the conflist and on
+// the attachment alike.
+type internetEgress struct {
+	shardSIDs []string
+
+	// sourceAddress is what translation writes, resolved from the shard the
+	// node prefers. Empty when no selected shard has reported an address yet,
+	// or when the class's sharing was never projected and the stability a
+	// consumer needs before acting cannot be derived.
+	sourceAddress *cloudv1alpha1.InternetEgressSourceAddress
+}
+
+// conflist renders the block the node reads, or nothing.
+func (e *internetEgress) conflist() *galactic.Egress {
+	if e == nil {
+		return nil
+	}
+	return &galactic.Egress{ShardSIDs: e.shardSIDs}
+}
+
+// status renders what a consumer reads back, or nothing. An address the
+// platform cannot state is reported as no egress rather than as a guess: a
+// consumer allow-listing the wrong address admits the wrong traffic and has no
+// way to tell.
+func (e *internetEgress) status() *cloudv1alpha1.VPCAttachmentEgressStatus {
+	if e == nil || e.sourceAddress == nil {
+		return nil
+	}
+	return &cloudv1alpha1.VPCAttachmentEgressStatus{
+		Internet: &cloudv1alpha1.VPCAttachmentInternetEgressStatus{
+			SourceAddresses: []cloudv1alpha1.InternetEgressSourceAddress{*e.sourceAddress},
+		},
+	}
+}
+
 // resolveInternetEgress turns the egress intent projected onto a NetworkContext
-// into the ordered shard candidates a node routes this VPC's VRF toward. A nil
-// result renders no egress block, so the VPC reaches nothing outside the
-// platform.
+// into the ordered shard candidates a node routes this VPC's VRF toward, and
+// the source address those candidates translate to.
 //
 // Egress intent is a function of (VPC, cell) and of nothing else — not of the
 // attachment, the interface, or the claim. The kernel VRF is shared by every
@@ -331,7 +373,7 @@ func interfaceAddresses(networkInterface *networkingv1alpha.NetworkInterface) []
 // matched, breaks the invariant without breaking a test.
 func (r *NetworkInterfaceReconciler) resolveInternetEgress(
 	ctx context.Context, networkContext *networkingv1alpha.NetworkContext,
-) (*galactic.Egress, error) {
+) (*internetEgress, error) {
 	log := logf.FromContext(ctx)
 
 	intent := internetEgressIntent(networkContext)
@@ -379,35 +421,92 @@ func (r *NetworkInterfaceReconciler) resolveInternetEgress(
 		return nil, err
 	}
 
-	sids := make([]string, 0, len(shards))
-	sources := make([]string, 0, len(shards))
+	resolved := &internetEgress{shardSIDs: make([]string, 0, len(shards))}
+	var preferred *bgpv1alpha1.EgressShard
 	for i := range shards {
 		// A shard whose SID is unreported has nothing a node can route toward.
 		// The SID stays in status because nothing allocates one yet.
 		if shards[i].Status.ShardSID == "" {
 			continue
 		}
-		if slices.Contains(sids, shards[i].Status.ShardSID) {
+		if slices.Contains(resolved.shardSIDs, shards[i].Status.ShardSID) {
 			continue
 		}
-		sids = append(sids, shards[i].Status.ShardSID)
-		if address := shards[i].Status.ShardAddressIPv6; address != "" {
-			sources = append(sources, address)
+		resolved.shardSIDs = append(resolved.shardSIDs, shards[i].Status.ShardSID)
+		if preferred == nil {
+			preferred = &shards[i]
 		}
 	}
-	if len(sids) == 0 {
+	if len(resolved.shardSIDs) == 0 {
 		log.Info("internet egress is enabled but no shard serves this network",
 			"networkContext", networkContext.Name, "class", intent.ClassName,
 			"parameters", parameters.Name)
 		return nil, nil
 	}
 
-	// The source addresses are the answer a consumer reads back. Nothing in
-	// this cell writes them onto the network context yet, so they are reported
-	// here and nowhere else.
-	log.Info("internet egress bound", "networkContext", networkContext.Name,
-		"class", intent.ClassName, "shardSIDs", sids, "sourceAddressesIPv6", sources)
-	return &galactic.Egress{ShardSIDs: sids}, nil
+	resolved.sourceAddress = sourceAddress(preferred, intent.Sharing)
+	if resolved.sourceAddress == nil {
+		log.Info("internet egress is bound but no source address can be reported",
+			"networkContext", networkContext.Name, "shard", preferred.Name,
+			"sharing", intent.Sharing)
+	}
+	log.V(1).Info("internet egress bound", "networkContext", networkContext.Name,
+		"class", intent.ClassName, "shardSIDs", resolved.shardSIDs,
+		"sourceAddress", resolved.sourceAddress)
+	return resolved, nil
+}
+
+// sourceAddress is what a consumer reads back for the shard the node prefers.
+//
+// The candidate list is a preference the node resolves down to one entry, so
+// the first candidate is the shard traffic is intended to leave through and its
+// address is the one to report. Reporting every candidate's address would tell
+// a consumer their traffic leaves on addresses it does not.
+//
+// The address itself is write-once and immutable upstream, so a reported value
+// that changes means the shard it came from was replaced, not that the platform
+// renumbered a live one.
+//
+// Nothing is reported unless both halves are known. An address without the
+// stability that qualifies it invites the allow-listing that stability exists
+// to forbid.
+func sourceAddress(
+	shard *bgpv1alpha1.EgressShard, sharing networkingv1alpha.InternetEgressSharing,
+) *cloudv1alpha1.InternetEgressSourceAddress {
+	if shard == nil || shard.Status.ShardAddressIPv6 == "" {
+		return nil
+	}
+	stability, ok := addressStability(sharing)
+	if !ok {
+		return nil
+	}
+	return &cloudv1alpha1.InternetEgressSourceAddress{
+		Family:    cloudv1alpha1.InternetEgressAddressFamilyIPv6,
+		Address:   shard.Status.ShardAddressIPv6,
+		Stability: stability,
+	}
+}
+
+// addressStability projects the serving class's sharing into the contract a
+// consumer acts on. The projection is made here rather than by the consumer:
+// sharing is an operator-side decision about the platform, and a consumer that
+// had to interpret it would be deciding for themselves whether allow-listing an
+// address is safe.
+func addressStability(
+	sharing networkingv1alpha.InternetEgressSharing,
+) (cloudv1alpha1.InternetEgressAddressStability, bool) {
+	switch sharing {
+	case networkingv1alpha.InternetEgressSharingShared:
+		return cloudv1alpha1.InternetEgressAddressStabilityNone, true
+	case networkingv1alpha.InternetEgressSharingDedicated:
+		return cloudv1alpha1.InternetEgressAddressStabilityNetwork, true
+	default:
+		// Sharing is optional upstream, so an unprojected value is an ordinary
+		// answer. There is no safe default: guessing Shared understates a
+		// dedicated address, and guessing Dedicated invites an allow-list of a
+		// shared one.
+		return "", false
+	}
 }
 
 // internetEgressIntent reads the internet egress a location was instructed to
@@ -487,16 +586,38 @@ func (r *NetworkInterfaceReconciler) allocateAttachmentIdentifier(ctx context.Co
 		vpc, maxIdentifierAttempts)
 }
 
-// publishAttachmentStatus records the allocated identifiers on the attachment.
+// publishAttachmentStatus records the allocated identifiers on the attachment,
+// and the egress address a consumer reads back through the interface that holds
+// it.
+//
+// Two reconcilers write this status, over disjoint field sets: this one writes
+// the identifiers, the attachment definition and now the egress address, and
+// the BGPAdvertisement reconciler writes what the node programmed. Both do a
+// whole-object Status().Update, which carries the resourceVersion it was read
+// at, so a writer working from a copy the other has since superseded is
+// rejected with a conflict and retries — it does not overwrite fields it never
+// set. Adding a field set to a reconciler that already writes here keeps the
+// writer count at two and that property intact.
+//
+// Server-side apply was considered and rejected. It would have to convert both
+// writers to be coherent: a status subresource written by SSA on one side and
+// replaced wholesale on the other is worse than either alone, because the
+// wholesale writer drops whatever it did not read. Converting both means
+// generated apply configurations this repository does not produce, or the
+// deprecated unstructured apply path whose single use here is a foreign object.
+// That is a change to make deliberately, for the type as a whole, and not as a
+// side effect of adding three fields.
 func (r *NetworkInterfaceReconciler) publishAttachmentStatus(
 	ctx context.Context,
 	attachment *cloudv1alpha1.VPCAttachment,
 	vpc *cloudv1alpha1.VPC,
 	nad *nadv1.NetworkAttachmentDefinition,
+	egress *internetEgress,
 ) error {
 	attachment.Status.VPC = vpc.Status.VPC
 	attachment.Status.VPCAttachment = nad.Labels[LabelVPCAttachment]
 	attachment.Status.NetworkAttachmentDefinition = nad.Name
+	attachment.Status.Egress = egress.status()
 	attachment.Status.ObservedGeneration = attachment.Generation
 	meta.SetStatusCondition(&attachment.Status.Conditions, metav1.Condition{
 		Type:               cloudv1alpha1.ConditionTypeReady,

@@ -114,6 +114,85 @@ type VPCAttachmentInterface struct {
 	Addresses []IPAddress `json:"addresses,omitempty"`
 }
 
+// InternetEgressAddressFamily is the address family of an egress source
+// address.
+//
+// Only IPv6 is reported. Reaching an IPv4 destination needs a resolver and a
+// translator sharing a prefix, which the platform pairs neither of, so the
+// value is withheld rather than reported and not delivered. An address written
+// today records IPv6, so accepting IPv4 later changes no attachment.
+//
+// +kubebuilder:validation:Enum=IPv6
+type InternetEgressAddressFamily string
+
+// InternetEgressAddressFamilyIPv6 is an IPv6 egress source address.
+const InternetEgressAddressFamilyIPv6 InternetEgressAddressFamily = "IPv6"
+
+// InternetEgressAddressStability is how far a consumer may rely on an egress
+// source address. It is the consumer-side projection of the serving class's
+// sharing, derived here so a consumer never reads a class.
+//
+// +kubebuilder:validation:Enum=None;Network
+type InternetEgressAddressStability string
+
+const (
+	// InternetEgressAddressStabilityNone means the address may change and
+	// other networks share it. Allow-listing it admits traffic from other
+	// networks and loses access when the address changes.
+	InternetEgressAddressStabilityNone InternetEgressAddressStability = "None"
+
+	// InternetEgressAddressStabilityNetwork means the address belongs to this
+	// network and persists. Allow-listing it is safe.
+	InternetEgressAddressStabilityNetwork InternetEgressAddressStability = "Network"
+)
+
+// InternetEgressSourceAddress is one address outbound traffic leaves on.
+//
+// +kubebuilder:validation:XValidation:rule="self.family != 'IPv6' || (isIP(self.address) && ip(self.address).family() == 6)",message="an IPv6 source address must be a valid IPv6 address"
+type InternetEgressSourceAddress struct {
+	// Family is the address family of this source address.
+	// +required
+	Family InternetEgressAddressFamily `json:"family"`
+
+	// Address is the source address translation writes, without a prefix
+	// length.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=39
+	// +required
+	Address string `json:"address"`
+
+	// Stability states how far a consumer may rely on this address before
+	// they act on it.
+	// +required
+	Stability InternetEgressAddressStability `json:"stability"`
+}
+
+// VPCAttachmentInternetEgressStatus reports the outbound path this attachment
+// leaves the platform on.
+type VPCAttachmentInternetEgressStatus struct {
+	// SourceAddresses are the addresses translation writes for this
+	// attachment, one per family reached.
+	//
+	// Absent means this attachment reaches nothing outside the platform, or
+	// that no address has been reported for a path that does. An absent list
+	// is never a placeholder: a consumer that allow-listed a guessed address
+	// would admit the wrong traffic and believe otherwise.
+	//
+	// +listType=map
+	// +listMapKey=family
+	// +kubebuilder:validation:MaxItems=2
+	// +optional
+	SourceAddresses []InternetEgressSourceAddress `json:"sourceAddresses,omitempty"`
+}
+
+// VPCAttachmentEgressStatus reports what this attachment reaches outside the
+// platform.
+type VPCAttachmentEgressStatus struct {
+	// Internet is the internet egress realized for this attachment.
+	// +optional
+	Internet *VPCAttachmentInternetEgressStatus `json:"internet,omitempty"`
+}
+
 // VPCAttachmentStatus defines the observed state of VPCAttachment.
 //
 // Every field but Conditions is optional: an identifier is recorded before a pod
@@ -181,6 +260,15 @@ type VPCAttachmentStatus struct {
 	// +kubebuilder:validation:MinLength=1
 	// +optional
 	NetworkAttachmentDefinition string `json:"networkAttachmentDefinition,omitempty"`
+
+	// Egress reports what this attachment reaches outside the platform.
+	//
+	// It is reported per attachment rather than on the network, because the
+	// interface is what a workload holds and what a consumer reads back
+	// through. This controller is the only component that resolved which shard
+	// the network bound to, so it is the only one that can report the answer.
+	// +optional
+	Egress *VPCAttachmentEgressStatus `json:"egress,omitempty"`
 }
 
 // +kubebuilder:object:root=true

@@ -73,6 +73,11 @@ spec:
                   traffic — and everyone else's on the same class — leaves the platform
                   through. Naming the one namespace an operator owns keeps that
                   unreachable.
+
+                  It carries no default even though every deployment today answers
+                  galactic-system, which is where the galactic data plane's own objects
+                  live. The namespace names the nodes that every network on this class
+                  leaves the platform through, and that is worth an operator stating.
                 maxLength: 63
                 minLength: 1
                 type: string

@@ -43,6 +43,11 @@ type EgressShardParametersSpec struct {
 	// through. Naming the one namespace an operator owns keeps that
 	// unreachable.
 	//
+	// It carries no default even though every deployment today answers
+	// galactic-system, which is where the galactic data plane's own objects
+	// live. The namespace names the nodes that every network on this class
+	// leaves the platform through, and that is worth an operator stating.
+	//
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=63
