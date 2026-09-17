@@ -9,10 +9,60 @@
 Package v1alpha1 contains API Schema definitions for the cloud.datumapis.com/v1alpha1 API group.
 
 ### Resource Types
+- [EgressShardParameters](#egressshardparameters)
 - [NetworkFabricIdentity](#networkfabricidentity)
 - [VPC](#vpc)
 - [VPCAttachment](#vpcattachment)
 
+
+
+#### EgressShardParameters
+
+
+
+EgressShardParameters is the configuration this controller reads when an
+InternetEgressClass names it, and it holds which egress shards serve the
+networks that class places in this cell.
+
+It is cluster-scoped because the reference that reaches it carries no
+namespace: a class is cluster-scoped and its parametersRef states a group, a
+kind and a name only, so a namespaced parameters object would be
+unresolvable from the class that names it. The content is an operator's
+statement about the cell's own data plane rather than anything belonging to
+one tenant, and every tenant namespace resolves the same answer from it.
+
+This object is written by an operator. No consumer reads or writes one, and
+a consumer names a class, never these parameters.
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `cloud.datumapis.com/v1alpha1` | | |
+| `kind` _string_ | `EgressShardParameters` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  |  |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  |  |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `spec` _[EgressShardParametersSpec](#egressshardparametersspec)_ | Spec is the whole of this object. There is no status: nothing reconciles<br />these parameters, and the result of applying them is reported on the<br />network context whose egress they served. |  |  |
+
+
+#### EgressShardParametersSpec
+
+
+
+EgressShardParametersSpec selects the egress shards serving a class.
+
+
+
+_Appears in:_
+- [EgressShardParameters](#egressshardparameters)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `shardNamespace` _string_ | ShardNamespace is the namespace holding the EgressShard objects this<br />selector may match.<br />It is required and there is no cluster-wide search. A selector evaluated<br />over every namespace would match an EgressShard a tenant created in a<br />namespace they write to, which is a tenant naming the node their own<br />traffic — and everyone else's on the same class — leaves the platform<br />through. Naming the one namespace an operator owns keeps that<br />unreachable. |  | MaxLength: 63 <br />MinLength: 1 <br />Required: \{\} <br /> |
+| `shardSelector` _[LabelSelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v/#labelselector-v1-meta)_ | ShardSelector selects the EgressShards a network on this class egresses<br />through, by the network.datumapis.com/egress-* labels an operator sets<br />on them.<br />An empty selector matches every shard in the namespace, which sends a<br />consumer's traffic out of an arbitrary cell. Egress is realized per<br />cell, so a selector is expected to pin a cell and a pool.<br />The selector runs one way, as the only binding between a class and the<br />shards serving it: a shard names nothing that selects it, which is what<br />keeps the data-plane API group independent of the consumer-facing one. |  | Required: \{\} <br /> |
 
 
 #### IPAddress

@@ -78,3 +78,7 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.3 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
+
+replace go.datum.net/network => ../network-egress-spec
+
+replace go.datum.net/network-services-operator => ../nso-internet-egress

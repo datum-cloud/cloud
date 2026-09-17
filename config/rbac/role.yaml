@@ -14,6 +14,14 @@ rules:
 - apiGroups:
   - cloud.datumapis.com
   resources:
+  - egressshardparameters
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - cloud.datumapis.com
+  resources:
   - networkfabricidentities
   - vpcattachments
   - vpcs
@@ -71,6 +79,7 @@ rules:
   resources:
   - bgpadvertisements
   - bgprouters
+  - egressshards
   verbs:
   - get
   - list

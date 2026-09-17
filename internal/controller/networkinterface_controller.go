@@ -18,25 +18,32 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 package controller
 
 import (
+	"cmp"
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	nadv1 "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cloudv1alpha1 "go.datum.net/cloud/api/v1alpha1"
 	"go.datum.net/cloud/internal/galactic"
 	"go.datum.net/cloud/internal/identifier"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	bgpv1alpha1 "go.datum.net/network/api/v1alpha1"
 )
 
 const (
@@ -93,7 +100,10 @@ type NetworkInterfaceReconciler struct {
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaces/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaceclaims,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkinterfaceclaims/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkcontexts,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cloud.datumapis.com,resources=vpcs,verbs=get;list;watch
+// +kubebuilder:rbac:groups=cloud.datumapis.com,resources=egressshardparameters,verbs=get;list;watch
+// +kubebuilder:rbac:groups=network.datumapis.com,resources=egressshards,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cloud.datumapis.com,resources=vpcattachments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cloud.datumapis.com,resources=vpcattachments/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=k8s.cni.cncf.io,resources=network-attachment-definitions,verbs=get;list;watch;create;update;patch;delete
@@ -110,6 +120,9 @@ func (r *NetworkInterfaceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, nil
 	}
 
+	// The VPC is named after the NetworkContext it realizes, so one key reads
+	// both: the identity the fabric keys on, and the egress intent projected
+	// onto this location.
 	var vpc cloudv1alpha1.VPC
 	vpcKey := types.NamespacedName{
 		Namespace: networkInterface.Namespace,
@@ -128,11 +141,24 @@ func (r *NetworkInterfaceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			fmt.Sprintf("VPC %s has no identifier yet", vpc.Name))
 	}
 
+	var networkContext networkingv1alpha.NetworkContext
+	if err := r.Get(ctx, vpcKey, &networkContext); err != nil {
+		if apierrors.IsNotFound(err) {
+			// The VPC exists only because this context did, so a context that
+			// is gone is a network being withdrawn from the cell rather than a
+			// race worth rendering through.
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, r.markPrepared(ctx, &networkInterface,
+				metav1.ConditionFalse, "AwaitingNetworkContext",
+				fmt.Sprintf("NetworkContext %s does not exist yet", vpcKey.Name))
+		}
+		return ctrl.Result{}, fmt.Errorf("get NetworkContext %s: %w", vpcKey, err)
+	}
+
 	attachment, err := r.reconcileAttachment(ctx, &networkInterface, &vpc)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	nad, err := r.reconcileNAD(ctx, attachment, &vpc, &networkInterface)
+	nad, err := r.reconcileNAD(ctx, attachment, &vpc, &networkInterface, &networkContext)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -183,6 +209,7 @@ func (r *NetworkInterfaceReconciler) reconcileNAD(
 	attachment *cloudv1alpha1.VPCAttachment,
 	vpc *cloudv1alpha1.VPC,
 	networkInterface *networkingv1alpha.NetworkInterface,
+	networkContext *networkingv1alpha.NetworkContext,
 ) (*nadv1.NetworkAttachmentDefinition, error) {
 	nad := &nadv1.NetworkAttachmentDefinition{
 		ObjectMeta: metav1.ObjectMeta{Name: attachment.Name, Namespace: attachment.Namespace},
@@ -209,9 +236,13 @@ func (r *NetworkInterfaceReconciler) reconcileNAD(
 			Gateway: address.Gateway,
 		})
 	}
+	egress, err := r.resolveInternetEgress(ctx, networkContext)
+	if err != nil {
+		return nil, err
+	}
 	config, err := galactic.ConflistJSON(attachment.Name, masterPlugin(attachment.Spec.Interface.Mode),
 		vpc.Status.VPC, attachmentID, networkInterface.Spec.MTU, addresses,
-		declaresDevice(attachment.Spec.Interface.Mode))
+		declaresDevice(attachment.Spec.Interface.Mode), egress)
 	if err != nil {
 		return nil, err
 	}
@@ -279,6 +310,153 @@ func interfaceAddresses(networkInterface *networkingv1alpha.NetworkInterface) []
 		addresses = append(addresses, cloudv1alpha1.IPAddress(address.Address))
 	}
 	return addresses
+}
+
+// resolveInternetEgress turns the egress intent projected onto a NetworkContext
+// into the ordered shard candidates a node routes this VPC's VRF toward. A nil
+// result renders no egress block, so the VPC reaches nothing outside the
+// platform.
+//
+// Egress intent is a function of (VPC, cell) and of nothing else — not of the
+// attachment, the interface, or the claim. The kernel VRF is shared by every
+// attachment of a VPC on a node and the datapath's route key has no
+// per-attachment component, so two attachments of one VPC asking for different
+// egress is undefined: the last ADD wins and silently redirects the traffic of
+// every attachment already up. Nothing here can express that divergence,
+// because the only input is the NetworkContext, the VPC is named after it, and
+// every attachment of a VPC therefore resolves the same context and computes
+// the same list. The install is idempotent by construction rather than by a
+// check. Keep it that way: an input read off the interface, the claim or the
+// attachment, or a selection that is not deterministic over the shards it
+// matched, breaks the invariant without breaking a test.
+func (r *NetworkInterfaceReconciler) resolveInternetEgress(
+	ctx context.Context, networkContext *networkingv1alpha.NetworkContext,
+) (*galactic.Egress, error) {
+	log := logf.FromContext(ctx)
+
+	intent := internetEgressIntent(networkContext)
+	if intent == nil {
+		// A context written before this field existed carries no intent, which
+		// is not the same as a network that reaches nothing. Both render no
+		// egress; only this one is worth saying out loud.
+		log.V(1).Info("network context carries no projected egress intent",
+			"networkContext", networkContext.Name)
+		return nil, nil
+	}
+	if intent.Mode != networkingv1alpha.NetworkInternetEgressEnabled {
+		return nil, nil
+	}
+
+	ref := intent.ParametersRef
+	if ref == nil {
+		log.Info("internet egress is enabled but the serving class names no parameters",
+			"networkContext", networkContext.Name, "class", intent.ClassName)
+		return nil, nil
+	}
+	// The reference is opaque, so this controller recognizes only its own
+	// parameters and leaves another implementation's class alone rather than
+	// guessing at a type it does not own.
+	if ref.Group != cloudv1alpha1.GroupVersion.Group || ref.Kind != cloudv1alpha1.KindEgressShardParameters {
+		log.V(1).Info("internet egress class is served by another implementation",
+			"networkContext", networkContext.Name, "class", intent.ClassName,
+			"group", ref.Group, "kind", ref.Kind)
+		return nil, nil
+	}
+
+	var parameters cloudv1alpha1.EgressShardParameters
+	if err := r.Get(ctx, client.ObjectKey{Name: ref.Name}, &parameters); err != nil {
+		if apierrors.IsNotFound(err) {
+			log.Info("internet egress parameters do not exist in this cell",
+				"networkContext", networkContext.Name, "class", intent.ClassName,
+				"parameters", ref.Name)
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get EgressShardParameters %s: %w", ref.Name, err)
+	}
+
+	shards, err := r.egressShards(ctx, &parameters)
+	if err != nil {
+		return nil, err
+	}
+
+	sids := make([]string, 0, len(shards))
+	sources := make([]string, 0, len(shards))
+	for i := range shards {
+		// A shard whose SID is unreported has nothing a node can route toward.
+		// The SID stays in status because nothing allocates one yet.
+		if shards[i].Status.ShardSID == "" {
+			continue
+		}
+		if slices.Contains(sids, shards[i].Status.ShardSID) {
+			continue
+		}
+		sids = append(sids, shards[i].Status.ShardSID)
+		if address := shards[i].Status.ShardAddressIPv6; address != "" {
+			sources = append(sources, address)
+		}
+	}
+	if len(sids) == 0 {
+		log.Info("internet egress is enabled but no shard serves this network",
+			"networkContext", networkContext.Name, "class", intent.ClassName,
+			"parameters", parameters.Name)
+		return nil, nil
+	}
+
+	// The source addresses are the answer a consumer reads back. Nothing in
+	// this cell writes them onto the network context yet, so they are reported
+	// here and nowhere else.
+	log.Info("internet egress bound", "networkContext", networkContext.Name,
+		"class", intent.ClassName, "shardSIDs", sids, "sourceAddressesIPv6", sources)
+	return &galactic.Egress{ShardSIDs: sids}, nil
+}
+
+// internetEgressIntent reads the internet egress a location was instructed to
+// provide. Every field on it is already resolved, so nothing here selects a
+// class, picks a default, or interprets the class's parameters reference.
+func internetEgressIntent(
+	networkContext *networkingv1alpha.NetworkContext,
+) *networkingv1alpha.NetworkContextInternetEgress {
+	if networkContext.Spec.Egress == nil {
+		return nil
+	}
+	return networkContext.Spec.Egress.Internet
+}
+
+// egressShards lists the shards the parameters select, in name order.
+//
+// The order is what makes the candidate list a function of the matched set
+// alone: an unordered list would differ between two attachments of one VPC
+// reconciled moments apart, which is exactly the divergence the VRF cannot
+// represent.
+func (r *NetworkInterfaceReconciler) egressShards(
+	ctx context.Context, parameters *cloudv1alpha1.EgressShardParameters,
+) ([]bgpv1alpha1.EgressShard, error) {
+	selector, err := metav1.LabelSelectorAsSelector(&parameters.Spec.ShardSelector)
+	if err != nil {
+		return nil, fmt.Errorf("parse the shard selector on EgressShardParameters %s: %w",
+			parameters.Name, err)
+	}
+	// Only IPv6 is reached, so a shard that translates no IPv6 flow is no
+	// candidate however an operator wrote the selector. The family label is
+	// matched on presence: absence, not a false value, means the family is
+	// unserved, so a shard predating the label never reads as serving one.
+	servesIPv6, err := labels.NewRequirement(bgpv1alpha1.LabelEgressShardIPv6, selection.Exists, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build the IPv6 shard requirement: %w", err)
+	}
+
+	var shards bgpv1alpha1.EgressShardList
+	if err := r.List(ctx, &shards,
+		client.InNamespace(parameters.Spec.ShardNamespace),
+		client.MatchingLabelsSelector{Selector: selector.Add(*servesIPv6)},
+	); err != nil {
+		return nil, fmt.Errorf("list egress shards for EgressShardParameters %s: %w",
+			parameters.Name, err)
+	}
+	slices.SortFunc(shards.Items, func(a, b bgpv1alpha1.EgressShard) int {
+		return cmp.Compare(a.Name, b.Name)
+	})
+	return shards.Items, nil
 }
 
 // allocateAttachmentIdentifier draws a random identifier unused within the VPC.
@@ -402,6 +580,59 @@ func (r *NetworkInterfaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&networkingv1alpha.NetworkInterface{}).
 		Owns(&cloudv1alpha1.VPCAttachment{}).
 		Watches(&nadv1.NetworkAttachmentDefinition{}, handler.EnqueueRequestsFromMapFunc(nadToInterface)).
+		Watches(&networkingv1alpha.NetworkContext{},
+			handler.EnqueueRequestsFromMapFunc(r.interfacesForNetworkContext)).
+		Watches(&bgpv1alpha1.EgressShard{},
+			handler.EnqueueRequestsFromMapFunc(r.interfacesForEgressShard)).
 		Named("networkinterface").
 		Complete(r)
+}
+
+// interfacesForNetworkContext re-renders a location's attachments when the
+// egress a consumer declared reaches it, so a network that was enabled does not
+// wait out a poll interval it does not have.
+func (r *NetworkInterfaceReconciler) interfacesForNetworkContext(
+	ctx context.Context, object client.Object,
+) []reconcile.Request {
+	var interfaces networkingv1alpha.NetworkInterfaceList
+	if err := r.List(ctx, &interfaces, client.InNamespace(object.GetNamespace())); err != nil {
+		return nil
+	}
+
+	requests := make([]reconcile.Request, 0, len(interfaces.Items))
+	for i := range interfaces.Items {
+		reference := interfaces.Items[i].Status.NetworkContextRef
+		if reference == nil || reference.Name != object.GetName() {
+			continue
+		}
+		requests = append(requests, reconcile.Request{
+			NamespacedName: client.ObjectKeyFromObject(&interfaces.Items[i]),
+		})
+	}
+	return requests
+}
+
+// interfacesForEgressShard re-renders every attachment in the cell when a shard
+// arrives, reports its SID, or leaves.
+//
+// It enqueues everything rather than working out which networks a shard serves:
+// the binding runs the other way, from a class's selector to the shards, so a
+// shard cannot name the networks on it. The sweep is affordable because a shard
+// is an operator-written object in one namespace and there are a handful of
+// them per cell, and re-rendering an unaffected attachment writes nothing.
+func (r *NetworkInterfaceReconciler) interfacesForEgressShard(
+	ctx context.Context, _ client.Object,
+) []reconcile.Request {
+	var interfaces networkingv1alpha.NetworkInterfaceList
+	if err := r.List(ctx, &interfaces); err != nil {
+		return nil
+	}
+
+	requests := make([]reconcile.Request, 0, len(interfaces.Items))
+	for i := range interfaces.Items {
+		requests = append(requests, reconcile.Request{
+			NamespacedName: client.ObjectKeyFromObject(&interfaces.Items[i]),
+		})
+	}
+	return requests
 }
