@@ -78,5 +78,3 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.3 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
-
-replace go.miloapis.com/ipam => github.com/milo-os/ipam v0.4.0
