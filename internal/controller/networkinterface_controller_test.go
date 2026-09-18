@@ -229,11 +229,35 @@ func newEgressContext(mode networkingv1alpha.NetworkInternetEgressMode) *network
 	return networkContext
 }
 
-func TestResolveInternetEgressSelectsMatchingShards(t *testing.T) {
+// newEgressClaim is the binding a location's egress was decided into: the one
+// claim per network context, naming the one shard it egresses through.
+func newEgressClaim(shardName string) *cloudv1alpha1.EgressShardClaim {
+	claim := &cloudv1alpha1.EgressShardClaim{}
+	claim.Namespace = egressTestNamespace
+	claim.Name = "default-us-central-1"
+	claim.Labels = map[string]string{cloudv1alpha1.LabelEgressShardClaimShard: shardName}
+	claim.Spec = cloudv1alpha1.EgressShardClaimSpec{
+		Network:        cloudv1alpha1.NetworkRef{Name: "default"},
+		NetworkContext: cloudv1alpha1.NetworkContextRef{Name: "default-us-central-1"},
+		ClassName:      "shared",
+		Sharing:        cloudv1alpha1.EgressSharingShared,
+		Families:       []cloudv1alpha1.InternetEgressAddressFamily{cloudv1alpha1.InternetEgressAddressFamilyIPv6},
+	}
+	if shardName != "" {
+		claim.Status.ShardRef = &cloudv1alpha1.EgressShardReference{
+			Namespace: egressShardNamespace,
+			Name:      shardName,
+		}
+	}
+	return claim
+}
+
+// The route a node installs, read off the binding rather than selected here.
+func TestResolveInternetEgressReadsTheBoundShard(t *testing.T) {
 	r := newEgressReconciler(t,
-		newEgressParameters(),
-		newEgressShard("shard-b", "2001:db8:ff02::", "2001:db8:1::2", poolLabels()),
-		newEgressShard("shard-a", "2001:db8:ff01::", "2001:db8:1::1", poolLabels()),
+		newEgressClaim("shard-b"),
+		newEgressShard("shard-b", "2001:db8:ff02::", "2001:db8:f00d::200", poolLabels()),
+		newEgressShard("shard-a", "2001:db8:ff01::", "2001:db8:f00d::100", poolLabels()),
 	)
 
 	egress, err := r.resolveInternetEgress(t.Context(),
@@ -242,14 +266,43 @@ func TestResolveInternetEgressSelectsMatchingShards(t *testing.T) {
 		t.Fatalf("resolveInternetEgress: %v", err)
 	}
 	if egress == nil {
-		t.Fatal("two matching shards resolved no egress")
+		t.Fatal("a bound claim resolved no egress")
 	}
-	// Name order, not list order: two attachments of one VPC reconciled moments
-	// apart have to compute the same list, because the VRF they share cannot
-	// hold two answers.
-	want := []string{"2001:db8:ff01::", "2001:db8:ff02::"}
+	// One entry, the bound shard's, even though another shard sorts ahead of it
+	// by name and matches the same class.
+	want := []string{"2001:db8:ff02::"}
 	if !slices.Equal(egress.shardSIDs, want) {
 		t.Errorf("shard SIDs: got %v, want %v", egress.shardSIDs, want)
+	}
+}
+
+// The bug binding removes. The node installs the first shard whose SID it can
+// resolve a route toward, which is not the first shard by name: a node that is
+// itself a shard can never resolve a route to its own advertised SID, and every
+// compute node runs the translator. Reporting the first shard by name therefore
+// told a workload on such a node one source address while its packets left on
+// another, breaking any allow-list built on the value. One bound shard is one
+// answer on both sides.
+func TestResolveInternetEgressReportsTheBoundShardsOwnAddress(t *testing.T) {
+	r := newEgressReconciler(t,
+		newEgressClaim("shard-b"),
+		newEgressShard("shard-a", "2001:db8:ff01::", "2001:db8:f00d::100", poolLabels()),
+		newEgressShard("shard-b", "2001:db8:ff02::", "2001:db8:f00d::200", poolLabels()),
+	)
+
+	egress, err := r.resolveInternetEgress(t.Context(),
+		newEgressContext(networkingv1alpha.NetworkInternetEgressEnabled))
+	if err != nil {
+		t.Fatalf("resolveInternetEgress: %v", err)
+	}
+	addresses := egress.status().Internet.SourceAddresses
+	if len(addresses) != 1 || addresses[0].Address != "2001:db8:f00d::200" {
+		t.Fatalf("got %v, want only the bound shard's address", addresses)
+	}
+	// The address reported and the SID the node routes toward have to come from
+	// the same shard, which is the property the divergence broke.
+	if !slices.Equal(egress.shardSIDs, []string{"2001:db8:ff02::"}) {
+		t.Errorf("shard SIDs: got %v, want the bound shard's", egress.shardSIDs)
 	}
 }
 
@@ -262,14 +315,13 @@ func TestResolveInternetEgressYieldsNothingWhenUnbound(t *testing.T) {
 	noParameters := newEgressContext(networkingv1alpha.NetworkInternetEgressEnabled)
 	noParameters.Spec.Egress.Internet.ParametersRef = nil
 
-	missingParameters := newEgressContext(networkingv1alpha.NetworkInternetEgressEnabled)
-	missingParameters.Spec.Egress.Internet.ParametersRef.Name = "not-in-this-cell"
-
 	unprojected := newEgressContext(networkingv1alpha.NetworkInternetEgressEnabled)
 	unprojected.Spec.Egress = nil
 
 	noInternet := newEgressContext(networkingv1alpha.NetworkInternetEgressEnabled)
 	noInternet.Spec.Egress.Internet = nil
+
+	boundShard := newEgressShard("shard-a", "2001:db8:ff01::", "2001:db8:f00d::100", poolLabels())
 
 	tests := []struct {
 		name           string
@@ -279,65 +331,53 @@ func TestResolveInternetEgressYieldsNothingWhenUnbound(t *testing.T) {
 		{
 			name:           "disabled",
 			networkContext: newEgressContext(networkingv1alpha.NetworkInternetEgressDisabled),
-			objects: []client.Object{newEgressParameters(),
-				newEgressShard("shard-a", "2001:db8:ff01::", "2001:db8:1::1", poolLabels())},
+			objects:        []client.Object{newEgressClaim("shard-a"), boundShard},
 		},
 		{
 			name:           "mode never projected",
 			networkContext: newEgressContext(""),
-			objects: []client.Object{newEgressParameters(),
-				newEgressShard("shard-a", "2001:db8:ff01::", "2001:db8:1::1", poolLabels())},
+			objects:        []client.Object{newEgressClaim("shard-a"), boundShard},
 		},
 		{
 			name:           "egress never projected",
 			networkContext: unprojected,
-			objects:        []client.Object{newEgressParameters()},
+			objects:        []client.Object{newEgressClaim("shard-a"), boundShard},
 		},
 		{
 			name:           "no internet egress projected",
 			networkContext: noInternet,
-			objects:        []client.Object{newEgressParameters()},
+			objects:        []client.Object{newEgressClaim("shard-a"), boundShard},
 		},
 		{
 			name:           "class names no parameters",
 			networkContext: noParameters,
-			objects:        []client.Object{newEgressParameters()},
+			objects:        []client.Object{newEgressClaim("shard-a"), boundShard},
 		},
 		{
 			name:           "parameters owned by another implementation",
 			networkContext: otherImplementation,
-			objects:        []client.Object{newEgressParameters()},
+			objects:        []client.Object{newEgressClaim("shard-a"), boundShard},
 		},
 		{
-			name:           "parameters absent from this cell",
-			networkContext: missingParameters,
-			objects:        []client.Object{newEgressParameters()},
-		},
-		{
-			name:           "no shard matches the selector",
+			name:           "nothing claimed a shard for this location",
 			networkContext: newEgressContext(networkingv1alpha.NetworkInternetEgressEnabled),
-			objects: []client.Object{newEgressParameters(),
-				newEgressShard("elsewhere", "2001:db8:ff01::", "2001:db8:1::1", map[string]string{
-					bgpv1alpha1.LabelEgressShardPool: "shared",
-					bgpv1alpha1.LabelEgressShardCell: "us-east-1",
-					bgpv1alpha1.LabelEgressShardIPv6: bgpv1alpha1.LabelValueEgressFamilyServed,
-				})},
+			objects:        []client.Object{boundShard},
 		},
 		{
-			name:           "matching shard translates no IPv6",
+			name:           "the claim is still waiting for a shard",
 			networkContext: newEgressContext(networkingv1alpha.NetworkInternetEgressEnabled),
-			objects: []client.Object{newEgressParameters(),
-				newEgressShard("ipv4-only", "2001:db8:ff01::", "", map[string]string{
-					bgpv1alpha1.LabelEgressShardPool: "shared",
-					bgpv1alpha1.LabelEgressShardCell: "us-central-1",
-					bgpv1alpha1.LabelEgressShardIPv4: bgpv1alpha1.LabelValueEgressFamilyServed,
-				})},
+			objects:        []client.Object{newEgressClaim(""), boundShard},
 		},
 		{
-			name:           "matching shard reports no SID",
+			name:           "the bound shard is gone",
 			networkContext: newEgressContext(networkingv1alpha.NetworkInternetEgressEnabled),
-			objects: []client.Object{newEgressParameters(),
-				newEgressShard("unprogrammed", "", "2001:db8:1::1", poolLabels())},
+			objects:        []client.Object{newEgressClaim("shard-a")},
+		},
+		{
+			name:           "the bound shard reports no identifier",
+			networkContext: newEgressContext(networkingv1alpha.NetworkInternetEgressEnabled),
+			objects: []client.Object{newEgressClaim("unprogrammed"),
+				newEgressShard("unprogrammed", "", "2001:db8:f00d::100", poolLabels())},
 		},
 	}
 	for _, test := range tests {
@@ -363,33 +403,15 @@ func TestResolveInternetEgressYieldsNothingWhenUnbound(t *testing.T) {
 	}
 }
 
-// A SID an operator typed onto two shards is one candidate, not two.
-func TestResolveInternetEgressDeduplicatesShardSIDs(t *testing.T) {
-	r := newEgressReconciler(t,
-		newEgressParameters(),
-		newEgressShard("shard-a", "2001:db8:ff01::", "2001:db8:1::1", poolLabels()),
-		newEgressShard("shard-b", "2001:db8:ff01::", "2001:db8:1::2", poolLabels()),
-	)
-
-	egress, err := r.resolveInternetEgress(t.Context(),
-		newEgressContext(networkingv1alpha.NetworkInternetEgressEnabled))
-	if err != nil {
-		t.Fatalf("resolveInternetEgress: %v", err)
-	}
-	if want := []string{"2001:db8:ff01::"}; egress == nil || !slices.Equal(egress.shardSIDs, want) {
-		t.Errorf("shard SIDs: got %v, want %v", egress, want)
-	}
-}
-
 // The invariant the datapath depends on: intent is a function of (VPC, cell)
 // and nothing else, so every attachment of a VPC computes the same value and
 // the install is idempotent. This asserts the property at the only seam where
 // it could be broken — the resolver takes the context and nothing else.
 func TestResolveInternetEgressIsAFunctionOfTheNetworkContextAlone(t *testing.T) {
 	r := newEgressReconciler(t,
-		newEgressParameters(),
-		newEgressShard("shard-a", "2001:db8:ff01::", "2001:db8:1::1", poolLabels()),
-		newEgressShard("shard-b", "2001:db8:ff02::", "2001:db8:1::2", poolLabels()),
+		newEgressClaim("shard-a"),
+		newEgressShard("shard-a", "2001:db8:ff01::", "2001:db8:f00d::100", poolLabels()),
+		newEgressShard("shard-b", "2001:db8:ff02::", "2001:db8:f00d::200", poolLabels()),
 	)
 	networkContext := newEgressContext(networkingv1alpha.NetworkInternetEgressEnabled)
 
@@ -403,6 +425,28 @@ func TestResolveInternetEgressIsAFunctionOfTheNetworkContextAlone(t *testing.T) 
 	}
 	if first == nil || second == nil || !slices.Equal(first.shardSIDs, second.shardSIDs) {
 		t.Errorf("two attachments of one VPC resolved %v and %v", first, second)
+	}
+}
+
+// The ordered array shape stays even though binding yields one entry, so a
+// binder recording a standby shard later needs no change on the node.
+func TestResolveInternetEgressRendersAnOrderedCandidateList(t *testing.T) {
+	r := newEgressReconciler(t,
+		newEgressClaim("shard-a"),
+		newEgressShard("shard-a", "2001:db8:ff01::", "2001:db8:f00d::100", poolLabels()),
+	)
+
+	egress, err := r.resolveInternetEgress(t.Context(),
+		newEgressContext(networkingv1alpha.NetworkInternetEgressEnabled))
+	if err != nil {
+		t.Fatalf("resolveInternetEgress: %v", err)
+	}
+	block := egress.conflist()
+	if block == nil {
+		t.Fatal("a bound claim rendered no conflist block")
+	}
+	if !slices.Equal(block.ShardSIDs, []string{"2001:db8:ff01::"}) {
+		t.Errorf("shardSIDs: got %v, want a one-entry list", block.ShardSIDs)
 	}
 }
 
@@ -423,7 +467,7 @@ func TestResolveInternetEgressPublishesTheSourceAddress(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			r := newEgressReconciler(t,
-				newEgressParameters(),
+				newEgressClaim("shard-a"),
 				newEgressShard("shard-a", "2001:db8:ff01::", "2001:db8:f00d::100", poolLabels()),
 			)
 			networkContext := newEgressContext(networkingv1alpha.NetworkInternetEgressEnabled)
@@ -469,7 +513,7 @@ func TestResolveInternetEgressWithholdsAnAddressItCannotState(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			r := newEgressReconciler(t,
-				newEgressParameters(),
+				newEgressClaim("shard-a"),
 				newEgressShard("shard-a", "2001:db8:ff01::", test.address, poolLabels()),
 			)
 			networkContext := newEgressContext(networkingv1alpha.NetworkInternetEgressEnabled)
@@ -486,27 +530,6 @@ func TestResolveInternetEgressWithholdsAnAddressItCannotState(t *testing.T) {
 				t.Errorf("published %v, want no address", status.Internet.SourceAddresses)
 			}
 		})
-	}
-}
-
-// One address is reported, for the shard the node prefers. Reporting every
-// candidate's address would tell a consumer their traffic leaves on addresses
-// it does not.
-func TestResolveInternetEgressReportsThePreferredShardsAddress(t *testing.T) {
-	r := newEgressReconciler(t,
-		newEgressParameters(),
-		newEgressShard("shard-b", "2001:db8:ff02::", "2001:db8:f00d::200", poolLabels()),
-		newEgressShard("shard-a", "2001:db8:ff01::", "2001:db8:f00d::100", poolLabels()),
-	)
-
-	egress, err := r.resolveInternetEgress(t.Context(),
-		newEgressContext(networkingv1alpha.NetworkInternetEgressEnabled))
-	if err != nil {
-		t.Fatalf("resolveInternetEgress: %v", err)
-	}
-	addresses := egress.status().Internet.SourceAddresses
-	if len(addresses) != 1 || addresses[0].Address != "2001:db8:f00d::100" {
-		t.Errorf("got %v, want only the first candidate's address", addresses)
 	}
 }
 

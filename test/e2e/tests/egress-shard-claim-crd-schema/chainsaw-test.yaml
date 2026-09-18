@@ -1,0 +1,128 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: egress-shard-claim-crd-schema
+spec:
+  description: >
+    Verify schema validation and storage for the EgressShardClaim CRD. The rule that
+    matters most is the immutable spec: a binding is decided once from these terms and
+    never recomputed, so terms that moved underneath it would describe a binding never
+    made under them. Does not require any controller — CRD schema is enforced by the API
+    server alone, and the binding itself lives on status, which no consumer writes.
+  steps:
+    - name: create-valid-claim
+      try:
+        - apply:
+            resource:
+              apiVersion: cloud.datumapis.com/v1alpha1
+              kind: EgressShardClaim
+              metadata:
+                name: e2e-default-us-central-1
+              spec:
+                network:
+                  name: default
+                networkContext:
+                  name: e2e-default-us-central-1
+                className: shared
+                sharing: Shared
+                families:
+                  - IPv6
+        - assert:
+            resource:
+              apiVersion: cloud.datumapis.com/v1alpha1
+              kind: EgressShardClaim
+              metadata:
+                name: e2e-default-us-central-1
+              spec:
+                className: shared
+                sharing: Shared
+
+    - name: reject-spec-change
+      try:
+        - script:
+            content: |
+              set +e
+              OUTPUT=$(kubectl apply -n "$NAMESPACE" -f - 2>&1 <<'EOF'
+              apiVersion: cloud.datumapis.com/v1alpha1
+              kind: EgressShardClaim
+              metadata:
+                name: e2e-default-us-central-1
+              spec:
+                network:
+                  name: default
+                networkContext:
+                  name: e2e-default-us-central-1
+                className: some-other-class
+                sharing: Shared
+                families:
+                  - IPv6
+              EOF
+              )
+              EXIT=$?
+              set -e
+              if [ "$EXIT" -eq 0 ]; then
+                echo "ERROR: the terms a binding was decided from were changed under it"
+                exit 1
+              fi
+              echo "$OUTPUT" | grep -q "spec is immutable" || {
+                echo "ERROR: rejected for the wrong reason: $OUTPUT"
+                exit 1
+              }
+              echo "OK: the terms are immutable once written"
+
+    - name: reject-ipv4-family
+      try:
+        - script:
+            content: |
+              set +e
+              OUTPUT=$(kubectl apply -n "$NAMESPACE" -f - 2>&1 <<'EOF'
+              apiVersion: cloud.datumapis.com/v1alpha1
+              kind: EgressShardClaim
+              metadata:
+                name: e2e-reaches-ipv4
+              spec:
+                network:
+                  name: default
+                networkContext:
+                  name: e2e-reaches-ipv4
+                className: shared
+                sharing: Shared
+                families:
+                  - IPv4
+              EOF
+              )
+              EXIT=$?
+              set -e
+              if [ "$EXIT" -eq 0 ]; then
+                echo "ERROR: a claim requiring a family no shard translates was accepted"
+                exit 1
+              fi
+              echo "OK: only the family the platform delivers is accepted"
+
+    - name: reject-empty-families
+      try:
+        - script:
+            content: |
+              set +e
+              OUTPUT=$(kubectl apply -n "$NAMESPACE" -f - 2>&1 <<'EOF'
+              apiVersion: cloud.datumapis.com/v1alpha1
+              kind: EgressShardClaim
+              metadata:
+                name: e2e-reaches-nothing
+              spec:
+                network:
+                  name: default
+                networkContext:
+                  name: e2e-reaches-nothing
+                className: shared
+                sharing: Shared
+                families: []
+              EOF
+              )
+              EXIT=$?
+              set -e
+              if [ "$EXIT" -eq 0 ]; then
+                echo "ERROR: a claim reaching no address family was accepted"
+                exit 1
+              fi
+              echo "OK: a claim must state what it reaches"

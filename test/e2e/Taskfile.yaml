@@ -57,6 +57,8 @@ tasks:
           --for=condition=Established
           crd/vpcs.cloud.datumapis.com
           crd/vpcattachments.cloud.datumapis.com
+          crd/egressshardpools.cloud.datumapis.com
+          crd/egressshardclaims.cloud.datumapis.com
           --timeout=60s
 
   test:
