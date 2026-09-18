@@ -41,11 +41,12 @@ import (
 )
 
 const (
-	testShardNamespace = "galactic-system"
-	testShardName      = "worker-8b4e1647-dfw"
-	testLocation       = "us-central-1"
-	testAddressClass   = "datum-egress-shard-address-ipv6"
-	testClaimNamespace = "default"
+	testShardNamespace  = "galactic-system"
+	testShardName       = "worker-8b4e1647-dfw"
+	testLocation        = "us-central-1"
+	testAddressClass    = "datum-egress-shard-address-ipv6"
+	testClaimNamespace  = "default"
+	testPlatformProject = "datum-cloud"
 )
 
 // fakeAddressIPAM stands in for the address service. Allocation is synchronous
@@ -189,6 +190,7 @@ func reconcilerFor(cell client.Client, service *fakeAddressIPAM) *EgressShardAdd
 		IPAM:             service,
 		AddressClassIPv6: testAddressClass,
 		ClaimNamespace:   testClaimNamespace,
+		PlatformProject:  testPlatformProject,
 		Location:         testLocation,
 	}
 }
@@ -440,10 +442,11 @@ func TestSetupRefusesADeploymentThatCannotClaimCorrectly(t *testing.T) {
 		name       string
 		reconciler *EgressShardAddressReconciler
 	}{
-		{"no class", &EgressShardAddressReconciler{ClaimNamespace: "default", Location: testLocation, IPAM: &fakeAddressIPAM{}}},
-		{"no location", &EgressShardAddressReconciler{AddressClassIPv6: testAddressClass, ClaimNamespace: "default", IPAM: &fakeAddressIPAM{}}},
-		{"no namespace", &EgressShardAddressReconciler{AddressClassIPv6: testAddressClass, Location: testLocation, IPAM: &fakeAddressIPAM{}}},
-		{"no address space", &EgressShardAddressReconciler{AddressClassIPv6: testAddressClass, ClaimNamespace: "default", Location: testLocation}},
+		{"no class", &EgressShardAddressReconciler{ClaimNamespace: "default", PlatformProject: testPlatformProject, Location: testLocation, IPAM: &fakeAddressIPAM{}}},
+		{"no location", &EgressShardAddressReconciler{AddressClassIPv6: testAddressClass, ClaimNamespace: "default", PlatformProject: testPlatformProject, IPAM: &fakeAddressIPAM{}}},
+		{"no namespace", &EgressShardAddressReconciler{AddressClassIPv6: testAddressClass, PlatformProject: testPlatformProject, Location: testLocation, IPAM: &fakeAddressIPAM{}}},
+		{"no project", &EgressShardAddressReconciler{AddressClassIPv6: testAddressClass, ClaimNamespace: "default", Location: testLocation, IPAM: &fakeAddressIPAM{}}},
+		{"no address space", &EgressShardAddressReconciler{AddressClassIPv6: testAddressClass, ClaimNamespace: "default", PlatformProject: testPlatformProject, Location: testLocation}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := tc.reconciler.SetupWithManager(nil); err == nil {
@@ -513,5 +516,173 @@ func TestTheAddressIsReadFromAllocatedCIDRNotStatusAddress(t *testing.T) {
 	}
 	if readShard(t, cell, testShardName).Spec.ShardAddressIPv6 == "" {
 		t.Fatal("the shard was left unaddressed by a claim whose allocatedCIDR was set")
+	}
+}
+
+// The address alone is unattributable: the service overwrites a claim's
+// ownerRef with the requesting project's identity, so the only trail from a
+// translating address to the allocation accountable for it is this reference.
+func TestAFreshlyClaimedAddressRecordsItsClaim(t *testing.T) {
+	cell := newShardCell(t, shard(testShardName))
+	service := newFakeAddressIPAM(t)
+
+	if _, err := reconcilerFor(cell, service).Reconcile(context.Background(),
+		requestFor(testShardName)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	got := readShard(t, cell, testShardName)
+	ref := got.Spec.ShardAddressIPv6ClaimRef
+	if ref == nil {
+		t.Fatal("the address was assigned with no trail back to what holds it")
+	}
+	if ref.Kind != egressaddress.KindIPClaim {
+		t.Errorf("kind = %q, want %q for an address a live claim holds", ref.Kind, egressaddress.KindIPClaim)
+	}
+	if want := egressaddress.ClaimName(testShardNamespace, testShardName); ref.Name != want {
+		t.Errorf("name = %q, want the claim named for the shard %q", ref.Name, want)
+	}
+	if ref.Namespace != testClaimNamespace {
+		t.Errorf("namespace = %q, want %q", ref.Namespace, testClaimNamespace)
+	}
+	// Required by the API, and a reference without it resolves nowhere.
+	if ref.Project != testPlatformProject {
+		t.Errorf("project = %q, want %q", ref.Project, testPlatformProject)
+	}
+	if ref.APIGroup != ipamv1alpha1.GroupName {
+		t.Errorf("apiGroup = %q, want %q", ref.APIGroup, ipamv1alpha1.GroupName)
+	}
+	// The reference must name the claim the address actually came from, which
+	// is the one the service was asked to bind.
+	if len(service.created) != 1 || service.created[0] != ref.Name {
+		t.Errorf("the reference names %q but the claims created were %v", ref.Name, service.created)
+	}
+}
+
+// The case most likely to record something that does not exist. Adopting an
+// address held by a retained allocation means no claim was ever stored, so the
+// reference has to name the allocation. Both fields are write-once, so naming
+// the refused claim would be permanent for this shard's lifetime.
+func TestAnAdoptedAddressRecordsTheAllocationItCameFrom(t *testing.T) {
+	claimName := egressaddress.ClaimName(testShardNamespace, testShardName)
+	allocationName := allocationNameForClaim(claimName)
+	const held = "2001:db8:100::abcd/128"
+
+	retained := &ipamv1alpha1.IPAllocation{
+		ObjectMeta: metav1.ObjectMeta{Namespace: testClaimNamespace, Name: allocationName},
+		Status:     ipamv1alpha1.IPAllocationStatus{AllocatedCIDR: held},
+	}
+
+	cell := newShardCell(t, shard(testShardName))
+	service := newFakeAddressIPAM(t)
+	service.retained[allocationName] = held
+	if err := service.client.Create(context.Background(), retained); err != nil {
+		t.Fatalf("seed the retained allocation: %v", err)
+	}
+
+	if _, err := reconcilerFor(cell, service).Reconcile(context.Background(),
+		requestFor(testShardName)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	got := readShard(t, cell, testShardName)
+	ref := got.Spec.ShardAddressIPv6ClaimRef
+	if ref == nil {
+		t.Fatal("an adopted address was assigned with no trail back to what holds it")
+	}
+	if ref.Name == claimName {
+		t.Fatal("the reference names the claim the service refused and never stored")
+	}
+	if ref.Name != allocationName {
+		t.Errorf("name = %q, want the allocation the refusal named %q", ref.Name, allocationName)
+	}
+	if ref.Kind != egressaddress.KindIPAllocation {
+		t.Errorf("kind = %q, want %q; no claim exists to point at", ref.Kind, egressaddress.KindIPAllocation)
+	}
+	if got.Spec.ShardAddressIPv6 != "2001:db8:100::abcd" {
+		t.Errorf("address = %q, want the retained address", got.Spec.ShardAddressIPv6)
+	}
+}
+
+// Both fields are write-once, so a shard already carrying them is read and left
+// exactly as it is. Reconciling one must not draw a second address, and must
+// not attempt a rewrite the API would refuse.
+func TestAShardCarryingBothIsLeftUntouched(t *testing.T) {
+	existing := shard(testShardName)
+	existing.Spec.ShardAddressIPv6 = "2001:db8:100::dead"
+	existing.Spec.ShardAddressIPv6ClaimRef = &bgpv1alpha1.AddressClaimRef{
+		APIGroup:  ipamv1alpha1.GroupName,
+		Kind:      egressaddress.KindIPClaim,
+		Project:   testPlatformProject,
+		Namespace: testClaimNamespace,
+		Name:      "a-claim-someone-else-made",
+	}
+	existing.Labels = map[string]string{
+		bgpv1alpha1.LabelEgressShardIPv6: bgpv1alpha1.LabelValueEgressFamilyServed,
+	}
+	cell := newShardCell(t, existing)
+	service := newFakeAddressIPAM(t)
+
+	if _, err := reconcilerFor(cell, service).Reconcile(context.Background(),
+		requestFor(testShardName)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if len(service.created) != 0 {
+		t.Errorf("an addressed shard drew %v from the public range", service.created)
+	}
+	got := readShard(t, cell, testShardName)
+	if got.Spec.ShardAddressIPv6 != "2001:db8:100::dead" {
+		t.Errorf("address = %q, want it untouched", got.Spec.ShardAddressIPv6)
+	}
+	if got.Spec.ShardAddressIPv6ClaimRef == nil || got.Spec.ShardAddressIPv6ClaimRef.Name != "a-claim-someone-else-made" {
+		t.Errorf("reference = %+v, want it untouched", got.Spec.ShardAddressIPv6ClaimRef)
+	}
+}
+
+// An address an operator assigned by hand has no claim behind it, so there is
+// nothing truthful to reference. It stays unattributable rather than gaining a
+// reference this controller invented for an allocation it never made -- which
+// would be permanent, and would name a claim that never existed.
+func TestAnOperatorAssignedAddressGainsNoInventedReference(t *testing.T) {
+	existing := shard(testShardName)
+	existing.Spec.ShardAddressIPv6 = "2001:db8:100::dead"
+	cell := newShardCell(t, existing)
+	service := newFakeAddressIPAM(t)
+
+	if _, err := reconcilerFor(cell, service).Reconcile(context.Background(),
+		requestFor(testShardName)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	got := readShard(t, cell, testShardName)
+	if got.Spec.ShardAddressIPv6ClaimRef != nil {
+		t.Fatalf("a hand-assigned address gained the invented reference %+v",
+			got.Spec.ShardAddressIPv6ClaimRef)
+	}
+	if len(service.created) != 0 {
+		t.Errorf("a hand-assigned address caused %v to be claimed for the sake of a reference", service.created)
+	}
+}
+
+// Nothing is written at all while the claim holds no address, so a shard never
+// gains a reference whose address is still missing -- both fields are
+// write-once and a half-written pair cannot be completed.
+func TestAnUnboundClaimWritesNeitherAddressNorReference(t *testing.T) {
+	cell := newShardCell(t, shard(testShardName))
+	service := newFakeAddressIPAM(t)
+	service.unbound = true
+
+	if _, err := reconcilerFor(cell, service).Reconcile(context.Background(),
+		requestFor(testShardName)); err == nil {
+		t.Fatal("a claim holding no address reconciled successfully")
+	}
+
+	got := readShard(t, cell, testShardName)
+	if got.Spec.ShardAddressIPv6 != "" {
+		t.Errorf("address = %q, want nothing written", got.Spec.ShardAddressIPv6)
+	}
+	if got.Spec.ShardAddressIPv6ClaimRef != nil {
+		t.Errorf("reference = %+v, want nothing written", got.Spec.ShardAddressIPv6ClaimRef)
 	}
 }

@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 
+	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -66,6 +67,14 @@ type EgressShardAddressReconciler struct {
 	// ClaimNamespace is the namespace in the platform's own tenancy that
 	// address claims are written to.
 	ClaimNamespace string
+
+	// PlatformProject is the project whose control plane serves the claims.
+	//
+	// It is carried here as well as inside the IPAM client factory because the
+	// reference written onto a shard has to name it: a claim is namespaced
+	// within a project, and the reference is read from outside every project,
+	// so a namespace alone does not identify one.
+	PlatformProject string
 
 	// Location is the location this cell serves. It selects the shared public
 	// range the address comes from, and two cells serving one location draw
@@ -120,6 +129,7 @@ func (r *EgressShardAddressReconciler) Reconcile(ctx context.Context, req ctrl.R
 	// that a rule pairing the address with the record holding it is satisfied
 	// by the write rather than by a second one that could fail on its own.
 	shard.Spec.ShardAddressIPv6 = holding.Address.String()
+	shard.Spec.ShardAddressIPv6ClaimRef = r.reference(holding)
 	if shard.Labels == nil {
 		shard.Labels = map[string]string{}
 	}
@@ -135,15 +145,28 @@ func (r *EgressShardAddressReconciler) Reconcile(ctx context.Context, req ctrl.R
 			shard.Name, holding.Address, holding.Kind, holding.Name, err)
 	}
 
-	// The holding record is logged rather than recorded on the shard, because
-	// the field that will carry it does not exist yet. It is what makes the
-	// address auditable: a claim cannot say which shard it was made for, so
-	// without this the link exists nowhere at all. A log line is a stopgap --
-	// it is not queryable and it ages out.
 	log.FromContext(ctx).Info("assigned an egress shard its public IPv6 address",
 		"shard", shard.Name, "address", holding.Address.String(), "location", r.Location,
 		"holderKind", holding.Kind, "holderNamespace", holding.Namespace, "holderName", holding.Name)
 	return ctrl.Result{}, nil
+}
+
+// reference is the trail from the address back to what holds it.
+//
+// It names the record that actually exists, which is not always a claim. An
+// address recovered from a retained allocation is held by an IPAllocation and
+// by no claim: the service rolls its transaction back before refusing, so the
+// claim it refused was never stored. Kind carries that difference rather than
+// taking its default, because the field is write-once and a reference naming a
+// claim that does not exist is permanent for the life of the shard.
+func (r *EgressShardAddressReconciler) reference(holding egressaddress.Holding) *bgpv1alpha1.AddressClaimRef {
+	return &bgpv1alpha1.AddressClaimRef{
+		APIGroup:  ipamv1alpha1.GroupName,
+		Kind:      holding.Kind,
+		Project:   r.PlatformProject,
+		Namespace: holding.Namespace,
+		Name:      holding.Name,
+	}
 }
 
 // markFamilyServed records that this shard translates IPv6, for the selectors
@@ -230,6 +253,12 @@ func (r *EgressShardAddressReconciler) SetupWithManager(mgr ctrl.Manager) error 
 	}
 	if r.ClaimNamespace == "" {
 		return errors.New("a namespace to write claims in is required")
+	}
+	if r.PlatformProject == "" {
+		// Every reference written onto a shard names it, and the field is
+		// write-once: a reference missing the project is permanent and
+		// resolves nowhere.
+		return errors.New("the project serving the claims is required")
 	}
 	if r.Location == "" {
 		// A claim carrying no location is refused by the service, and one

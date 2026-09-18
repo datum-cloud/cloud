@@ -145,6 +145,7 @@ func main() {
 		IPAM:             ipamClients,
 		AddressClassIPv6: addressClass,
 		ClaimNamespace:   claimNamespace,
+		PlatformProject:  platformProject,
 		Location:         location,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "EgressShardAddress")
