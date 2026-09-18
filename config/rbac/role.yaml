@@ -22,25 +22,7 @@ rules:
 - apiGroups:
   - cloud.datumapis.com
   resources:
-  - egressshardparameters
-  - egressshardpools
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - cloud.datumapis.com
-  resources:
-  - egressshardpools/status
-  - vpcattachments/status
-  - vpcs/status
-  verbs:
-  - get
-  - patch
-  - update
-- apiGroups:
-  - cloud.datumapis.com
-  resources:
+  - egressshardclaims
   - networkfabricidentities
   - vpcattachments
   - vpcs
@@ -51,6 +33,26 @@ rules:
   - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - cloud.datumapis.com
+  resources:
+  - egressshardclaims/status
+  - egressshardpools/status
+  - vpcattachments/status
+  - vpcs/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - cloud.datumapis.com
+  resources:
+  - egressshardparameters
+  - egressshardpools
+  verbs:
+  - get
+  - list
   - watch
 - apiGroups:
   - compute.datumapis.com
@@ -101,6 +103,8 @@ rules:
   - create
   - get
   - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - networking.datumapis.com
@@ -117,6 +121,7 @@ rules:
 - apiGroups:
   - networking.datumapis.com
   resources:
+  - networkcontexts/status
   - networkinterfaceclaims/status
   - networkinterfaces/status
   verbs:

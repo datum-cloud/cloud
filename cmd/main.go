@@ -123,6 +123,18 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "EgressShardPool")
 		os.Exit(1)
 	}
+	if err := (&controller.EgressShardClaimReconciler{
+		Client: mgr.GetClient(), Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "EgressShardClaim")
+		os.Exit(1)
+	}
+	if err := (&controller.EgressShardBindingReconciler{
+		Client: mgr.GetClient(), Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "EgressShardBinding")
+		os.Exit(1)
+	}
 	if err := (&controller.NetworkInterfaceReconciler{
 		Client: mgr.GetClient(), Scheme: mgr.GetScheme(), APIReader: mgr.GetAPIReader(),
 		AttachmentMode: attachmentMode,

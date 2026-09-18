@@ -9,12 +9,100 @@
 Package v1alpha1 contains API Schema definitions for the cloud.datumapis.com/v1alpha1 API group.
 
 ### Resource Types
+- [EgressShardClaim](#egressshardclaim)
 - [EgressShardParameters](#egressshardparameters)
 - [EgressShardPool](#egressshardpool)
 - [NetworkFabricIdentity](#networkfabricidentity)
 - [VPC](#vpc)
 - [VPCAttachment](#vpcattachment)
 
+
+
+#### EgressShardClaim
+
+
+
+EgressShardClaim is one network being bound to one egress shard in this cell.
+
+There is one claim per network context that declares egress — not one per
+interface and not one per attachment. The binding has to outlive the
+workloads using it: an instance is replaced routinely, and a binding that
+followed an attachment would move a network's source address every time that
+happened, which is the address a consumer allow-listed at their destination.
+
+The claim names no shard, no selector, no address and no pool. It states what
+the network needs and the cell answers with which shard serves it, the same
+division a subnet claim makes.
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `cloud.datumapis.com/v1alpha1` | | |
+| `kind` _string_ | `EgressShardClaim` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  |  |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  |  |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `spec` _[EgressShardClaimSpec](#egressshardclaimspec)_ | spec is the network being bound and the terms the binding satisfies |  |  |
+| `status` _[EgressShardClaimStatus](#egressshardclaimstatus)_ | status is the binding |  |  |
+
+
+#### EgressShardClaimSpec
+
+
+
+EgressShardClaimSpec is the network being bound to an egress shard, and the
+terms the binding has to satisfy.
+
+Every field is already resolved upstream and copied here verbatim. Nothing
+reading a claim selects a class, picks a default, or interprets a class's
+parameters.
+
+The whole spec is immutable. The binding is decided once from these facts
+and never recomputed, so a fact that moved underneath it would describe a
+binding that was never made under it. A consumer changing what they asked
+for is a claim deleted and a new one written, which is a crossing someone
+can see.
+
+
+
+_Appears in:_
+- [EgressShardClaim](#egressshardclaim)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `network` _[NetworkRef](#networkref)_ | Network is the network reaching the internet. |  |  |
+| `networkContext` _[NetworkContextRef](#networkcontextref)_ | NetworkContext is that network's presence in this cell, which is what<br />makes the claim one per location. |  |  |
+| `className` _string_ | ClassName is the InternetEgressClass resolved for this network. It is<br />recorded rather than read: the class is cluster-scoped upstream and no<br />copy of it reaches this cell. |  | MaxLength: 253 <br />MinLength: 1 <br /> |
+| `sharing` _[EgressSharing](#egresssharing)_ | Sharing is how many networks that class allows on one shard. |  | Enum: [Shared Dedicated] <br /> |
+| `families` _[InternetEgressAddressFamily](#internetegressaddressfamily) array_ | Families are the destination address families this binding has to reach,<br />so the shard it binds is one that translates them. |  | Enum: [IPv6] <br />MaxItems: 2 <br />MinItems: 1 <br /> |
+
+
+#### EgressShardClaimStatus
+
+
+
+EgressShardClaimStatus is the binding.
+
+The binding is recorded here and nowhere else. The shard side carries no
+reference back, unlike the interface and subnet claims this follows in every
+other respect: both of those are strictly one-to-one and the reference on the
+provisioned object is what enforces it, whereas many networks share one
+shard, so a shard-side reference would have to be a list of the networks
+served — which is the state a shard deliberately does not hold.
+
+
+
+_Appears in:_
+- [EgressShardClaim](#egressshardclaim)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `observedGeneration` _integer_ |  |  |  |
+| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v/#condition-v1-meta) array_ |  |  |  |
+| `shardRef` _[EgressShardReference](#egressshardreference)_ | ShardRef is the shard this network egresses through.<br />Absent means no shard is bound, which is what a location whose cell holds<br />no usable shard reads. Nothing publishes an address or a route in that<br />state: an address a consumer might allow-list is withheld until the<br />platform can state which one their packets leave on.<br />Present is permanent for this claim's life. It is written once, and<br />nothing recomputes it: a rebinding would move a live VPC's egress to a<br />different source address, which is the value a consumer allow-listed at<br />their destination. |  |  |
 
 
 #### EgressShardParameters
@@ -142,6 +230,49 @@ _Appears in:_
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v/#condition-v1-meta) array_ |  |  |  |
 
 
+#### EgressShardReference
+
+
+
+EgressShardReference names one egress shard.
+
+
+
+_Appears in:_
+- [EgressShardClaimStatus](#egressshardclaimstatus)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `namespace` _string_ | Namespace holding the shard. It is stated rather than assumed: the<br />shards are in the namespace an operator gave the serving class, which is<br />not the namespace a claim lives in. |  | MinLength: 1 <br /> |
+| `name` _string_ | Name of the shard. |  | MinLength: 1 <br /> |
+
+
+#### EgressSharing
+
+_Underlying type:_ _string_
+
+EgressSharing is how many networks may share one egress shard. It is the
+serving class's sharing, copied verbatim and recorded as the fact this
+binding was made under.
+
+Nothing branches on it. Every claim binds a shared shard, because dedicated
+capacity is a hand-commissioned shard node that no controller can grow while
+nothing allocates the identifier a shard is unusable without — a claim beyond
+that count would wait indefinitely. The value is carried because the
+projection writes it and a claim records what it was created from.
+
+_Validation:_
+- Enum: [Shared Dedicated]
+
+_Appears in:_
+- [EgressShardClaimSpec](#egressshardclaimspec)
+
+| Field | Description |
+| --- | --- |
+| `Shared` | EgressSharingShared lets many networks bind one shard and therefore<br />leave the platform on one address.<br /> |
+| `Dedicated` | EgressSharingDedicated would let exactly one network bind a shard, which<br />is what makes that shard's address the network's own. It is not offered<br />yet and nothing here enforces it; the value is defined so that a claim<br />written when it is offered means today what it will mean then.<br /> |
+
+
 #### IPAddress
 
 _Underlying type:_ _string_
@@ -172,6 +303,7 @@ _Validation:_
 - Enum: [IPv6]
 
 _Appears in:_
+- [EgressShardClaimSpec](#egressshardclaimspec)
 - [InternetEgressSourceAddress](#internetegresssourceaddress)
 
 | Field | Description |
@@ -229,6 +361,23 @@ _Validation:_
 _Appears in:_
 - [VPCSpec](#vpcspec)
 
+
+
+#### NetworkContextRef
+
+
+
+NetworkContextRef references a networking.datumapis.com NetworkContext by
+name in the same namespace.
+
+
+
+_Appears in:_
+- [EgressShardClaimSpec](#egressshardclaimspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name of the NetworkContext. |  | MinLength: 1 <br /> |
 
 
 #### NetworkFabricIdentity
@@ -315,6 +464,22 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `name` _string_ | Name of the NetworkInterface. |  | MinLength: 1 <br /> |
+
+
+#### NetworkRef
+
+
+
+NetworkRef references a networking.datumapis.com Network by name.
+
+
+
+_Appears in:_
+- [EgressShardClaimSpec](#egressshardclaimspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name of the Network. |  | MinLength: 1 <br /> |
 
 
 #### VPC
