@@ -87,6 +87,46 @@ const (
 	maxClaimNameLength = 253
 )
 
+// Holding is a shard's address together with the record in the addressing
+// service that holds it.
+//
+// The record has to be reported, not just the address, because the service
+// overwrites spec.ownerRef on a claim with the requesting project's identity.
+// A claim therefore cannot say which shard it was made for, and the only place
+// that link can live is on the shard, pointing back.
+//
+// Kind is part of it rather than assumed. An address recovered from a retained
+// allocation is held by an IPAllocation and by no claim at all: the service
+// rolls the transaction back before refusing, so the claim it refused was
+// never stored. A reference that named a claim in that case would name an
+// object that does not exist.
+type Holding struct {
+	// Address is the address the shard translates to.
+	Address netip.Addr
+
+	// Namespace is the namespace in the platform's tenancy holding the record.
+	Namespace string
+
+	// Kind is KindIPClaim or KindIPAllocation.
+	Kind string
+
+	// Name is the record's name. For a claim it is derived from the shard; for
+	// a retained allocation it is the name the service's refusal carried, and
+	// is never computed here.
+	Name string
+}
+
+// The kinds a Holding can name.
+const (
+	KindIPClaim      = "IPClaim"
+	KindIPAllocation = "IPAllocation"
+)
+
+// HeldByClaim reports whether a live claim holds the address. False means the
+// address was recovered from an allocation a released claim retained, and no
+// claim object exists to point at.
+func (h Holding) HeldByClaim() bool { return h.Kind == KindIPClaim }
+
 // Request names one shard's claim on the public address space.
 type Request struct {
 	// ClassName is the class that hands out shard addresses.
@@ -131,7 +171,7 @@ func ClaimName(shardNamespace, shardName string) string {
 // The service binds on create and refuses a duplicate name, so the read comes
 // first. That is what makes the allocation idempotent without this recording
 // anything of its own.
-func Claim(ctx context.Context, ipamClient client.Client, request Request) (netip.Addr, error) {
+func Claim(ctx context.Context, ipamClient client.Client, request Request) (Holding, error) {
 	ipClaim := &ipamv1alpha1.IPClaim{}
 	ipClaim.Namespace = request.Namespace
 	ipClaim.Name = ClaimName(request.ShardNamespace, request.ShardName)
@@ -173,7 +213,7 @@ func Claim(ctx context.Context, ipamClient client.Client, request Request) (neti
 	existing := &ipamv1alpha1.IPClaim{}
 	getErr := ipamClient.Get(ctx, client.ObjectKeyFromObject(ipClaim), existing)
 	if getErr != nil && !apierrors.IsNotFound(getErr) {
-		return netip.Addr{}, fmt.Errorf("read the egress address claim %q: %w", ipClaim.Name, getErr)
+		return Holding{}, fmt.Errorf("read the egress address claim %q: %w", ipClaim.Name, getErr)
 	}
 
 	if getErr == nil {
@@ -193,7 +233,7 @@ func Claim(ctx context.Context, ipamClient client.Client, request Request) (neti
 		// before calling this a failure to allocate.
 		raced := &ipamv1alpha1.IPClaim{}
 		if err := ipamClient.Get(ctx, client.ObjectKeyFromObject(ipClaim), raced); err != nil {
-			return netip.Addr{}, fmt.Errorf("claim an egress address: %w", createErr)
+			return Holding{}, fmt.Errorf("claim an egress address: %w", createErr)
 		}
 		ipClaim = raced
 	}
@@ -202,13 +242,24 @@ func Claim(ctx context.Context, ipamClient client.Client, request Request) (neti
 		// Not an error about the address: the claim exists and holds nothing
 		// yet. The caller must write nothing, because the field it would write
 		// cannot be corrected afterwards.
-		return netip.Addr{}, &UnboundError{
+		return Holding{}, &UnboundError{
 			claimName: ipClaim.Name,
 			phase:     string(ipClaim.Status.Phase),
 		}
 	}
 
-	return FromAllocatedCIDR(ipClaim.Status.AllocatedCIDR)
+	address, err := FromAllocatedCIDR(ipClaim.Status.AllocatedCIDR)
+	if err != nil {
+		return Holding{}, err
+	}
+	// The claim this address was read out of, by the name it was actually
+	// stored under -- not the name a caller would recompute.
+	return Holding{
+		Address:   address,
+		Namespace: ipClaim.Namespace,
+		Kind:      KindIPClaim,
+		Name:      ipClaim.Name,
+	}, nil
 }
 
 // Release gives the shard's address back.
@@ -232,16 +283,33 @@ func Release(ctx context.Context, ipamClient client.Client, namespace, shardName
 // adopt reads the address out of an allocation this shard already holds. The
 // allocation outlives the claim that made it, which is what retention is for,
 // so the address it names is the one this shard has always had.
-func adopt(ctx context.Context, ipamClient client.Client, namespace, allocationName string) (netip.Addr, error) {
+//
+// It returns the allocation as the holding record. No claim exists to return:
+// the service rolls its transaction back before answering with this refusal.
+func adopt(ctx context.Context, ipamClient client.Client, namespace, allocationName string) (Holding, error) {
 	allocation := &ipamv1alpha1.IPAllocation{}
 	if err := ipamClient.Get(ctx,
 		client.ObjectKey{Namespace: namespace, Name: allocationName}, allocation); err != nil {
-		return netip.Addr{}, fmt.Errorf("read the retained allocation %q: %w", allocationName, err)
+		return Holding{}, fmt.Errorf("read the retained allocation %q: %w", allocationName, err)
 	}
 	if allocation.Status.AllocatedCIDR == "" {
-		return netip.Addr{}, &UnboundError{claimName: allocationName, phase: string(allocation.Status.Phase)}
+		return Holding{}, &UnboundError{claimName: allocationName, phase: string(allocation.Status.Phase)}
 	}
-	return FromAllocatedCIDR(allocation.Status.AllocatedCIDR)
+	address, err := FromAllocatedCIDR(allocation.Status.AllocatedCIDR)
+	if err != nil {
+		return Holding{}, err
+	}
+	// The allocation, never the claim. The service rolled its transaction back
+	// before refusing the create, so the claim whose name this was derived
+	// from was never stored and pointing at it would point at nothing. The
+	// name is the one the refusal carried, so it names the object that is
+	// actually there.
+	return Holding{
+		Address:   address,
+		Namespace: namespace,
+		Kind:      KindIPAllocation,
+		Name:      allocationName,
+	}, nil
 }
 
 // FromAllocatedCIDR reads the shard's address out of what the service handed

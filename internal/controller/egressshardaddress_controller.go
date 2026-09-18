@@ -21,7 +21,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/netip"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -107,7 +106,7 @@ func (r *EgressShardAddressReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, r.markFamilyServed(ctx, shard)
 	}
 
-	address, err := r.claim(ctx, shard)
+	holding, err := r.claim(ctx, shard)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -116,7 +115,11 @@ func (r *EgressShardAddressReconciler) Reconcile(ctx context.Context, req ctrl.R
 	// could not produce one returned above, because spec.shardAddressIPv6 is
 	// write-once: a placeholder written here is not correctable, and the shard
 	// would have to be deleted and recreated to be rid of it.
-	shard.Spec.ShardAddressIPv6 = address.String()
+	//
+	// One update carries everything the shard gains from this allocation, so
+	// that a rule pairing the address with the record holding it is satisfied
+	// by the write rather than by a second one that could fail on its own.
+	shard.Spec.ShardAddressIPv6 = holding.Address.String()
 	if shard.Labels == nil {
 		shard.Labels = map[string]string{}
 	}
@@ -128,12 +131,18 @@ func (r *EgressShardAddressReconciler) Reconcile(ctx context.Context, req ctrl.R
 	// ownership of a field that cannot be reassigned is the one thing that must
 	// not happen quietly here.
 	if err := r.Client.Update(ctx, shard); err != nil {
-		return ctrl.Result{}, fmt.Errorf("assign egress shard %q the address %s: %w",
-			shard.Name, address, err)
+		return ctrl.Result{}, fmt.Errorf("assign egress shard %q the address %s held by %s %q: %w",
+			shard.Name, holding.Address, holding.Kind, holding.Name, err)
 	}
 
+	// The holding record is logged rather than recorded on the shard, because
+	// the field that will carry it does not exist yet. It is what makes the
+	// address auditable: a claim cannot say which shard it was made for, so
+	// without this the link exists nowhere at all. A log line is a stopgap --
+	// it is not queryable and it ages out.
 	log.FromContext(ctx).Info("assigned an egress shard its public IPv6 address",
-		"shard", shard.Name, "address", address.String(), "location", r.Location)
+		"shard", shard.Name, "address", holding.Address.String(), "location", r.Location,
+		"holderKind", holding.Kind, "holderNamespace", holding.Namespace, "holderName", holding.Name)
 	return ctrl.Result{}, nil
 }
 
@@ -157,13 +166,13 @@ func (r *EgressShardAddressReconciler) markFamilyServed(ctx context.Context, sha
 func (r *EgressShardAddressReconciler) claim(
 	ctx context.Context,
 	shard *bgpv1alpha1.EgressShard,
-) (netip.Addr, error) {
+) (egressaddress.Holding, error) {
 	ipamClient, err := r.IPAM.ClientForPlatform()
 	if err != nil {
-		return netip.Addr{}, fmt.Errorf("reach the public address space: %w", err)
+		return egressaddress.Holding{}, fmt.Errorf("reach the public address space: %w", err)
 	}
 
-	address, err := egressaddress.Claim(ctx, ipamClient, egressaddress.Request{
+	holding, err := egressaddress.Claim(ctx, ipamClient, egressaddress.Request{
 		ClassName:      r.AddressClassIPv6,
 		Namespace:      r.ClaimNamespace,
 		Location:       r.Location,
@@ -180,9 +189,9 @@ func (r *EgressShardAddressReconciler) claim(
 			log.FromContext(ctx).Error(err, "the public address space handed out something no shard address can be read from",
 				"shard", shard.Name, "location", r.Location)
 		}
-		return netip.Addr{}, fmt.Errorf("claim a public IPv6 address for egress shard %q: %w", shard.Name, err)
+		return egressaddress.Holding{}, fmt.Errorf("claim a public IPv6 address for egress shard %q: %w", shard.Name, err)
 	}
-	return address, nil
+	return holding, nil
 }
 
 // release gives back the address of a shard that is gone.
