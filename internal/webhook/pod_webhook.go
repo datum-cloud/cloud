@@ -112,8 +112,7 @@ func (i *PodInterfaceInjector) Handle(ctx context.Context, req admission.Request
 	if pod.Annotations == nil {
 		pod.Annotations = map[string]string{}
 	}
-	pod.Annotations[MultusNetworksAnnotation] = mergeNetworks(pod.Annotations[MultusNetworksAnnotation], networks)
-	pod.Annotations[MultusDefaultNetworkAnnotation] = networks[0]
+	injectNetworks(pod.Annotations, networks)
 	pod.Annotations[InjectedInterfacesAnnotation] = strings.Join(injected, ",")
 
 	patched, err := json.Marshal(pod)
@@ -186,12 +185,27 @@ func instanceOwner(pod *corev1.Pod) (string, bool) {
 	return "", false
 }
 
+// injectNetworks makes the first network the Pod's default and lists the rest as
+// additional networks. Multus attaches the default network as eth0 on its own, so
+// listing it again would attach the same definition a second time as net1.
+func injectNetworks(annotations map[string]string, networks []string) {
+	defaultNetwork := networks[0]
+	annotations[MultusDefaultNetworkAnnotation] = defaultNetwork
+
+	merged := mergeNetworks(annotations[MultusNetworksAnnotation], networks[1:], defaultNetwork)
+	if merged == "" {
+		delete(annotations, MultusNetworksAnnotation)
+		return
+	}
+	annotations[MultusNetworksAnnotation] = merged
+}
+
 // mergeNetworks appends the resolved networks to whatever the Pod already asked
-// for, without duplicating an entry.
-func mergeNetworks(existing string, networks []string) string {
+// for, without duplicating an entry or repeating the default network.
+func mergeNetworks(existing string, networks []string, defaultNetwork string) string {
 	merged := []string{}
-	for _, entry := range strings.Split(existing, ",") {
-		if entry = strings.TrimSpace(entry); entry != "" {
+	for entry := range strings.SplitSeq(existing, ",") {
+		if entry = strings.TrimSpace(entry); entry != "" && entry != defaultNetwork {
 			merged = append(merged, entry)
 		}
 	}
