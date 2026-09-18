@@ -1,0 +1,114 @@
+# The authorization this component needs, and the ceiling on how narrow it can
+# be made.
+#
+# APPLY DESTINATION: THE MILO CONTROL PLANE, NOT A CELL. This is deliberately
+# absent from kustomization.yaml beside it, so applying the cell overlay cannot
+# apply this by accident. Its home is the infrastructure repository, next to the
+# two grants it mirrors:
+#
+#   apps/vpc-system/control-plane/milo-ipam-rbac/rbac.yaml          (central
+#                                                                   fabric
+#                                                                   identity)
+#   apps/network-services-operator/control-plane/milo-cell-rbac/    (the NSO
+#     rbac.yaml                                                      cell)
+#
+# It is authored here because the component that needs it is here. Moving it is
+# an open item.
+#
+# ---------------------------------------------------------------------------
+# HOW NARROW THIS CAN BE, WHICH IS LESS NARROW THAN IT LOOKS
+#
+# The grant is cluster-wide across every project, and that is not an oversight.
+# Milo carries the project in the caller's user extras, and RBAC does not read
+# extras, so these verbs are authorized on every project path at once. Both
+# existing IPAM grants say the same thing and are written the same way.
+#
+# Scoping to the platform project alone requires an iam.miloapis.com
+# PolicyBinding whose resourceSelector.resourceRef names that Project, not
+# RBAC. That is available and is the tighter form; it is not used here only
+# because it would be the first of its kind for an IPAM grant and the two
+# existing grants would still be wide. Whether to convert all three together is
+# a decision for whoever owns the identity configuration.
+#
+# Scoping to one NAMESPACE within a project CANNOT BE EXPRESSED AT ALL. IPAM
+# declares Project as the only parentResource of an IPClaim
+# (config/components/iam/protected-resources/ipclaim.yaml), so the model has no
+# namespace dimension to bind against. A namespaced Role and RoleBinding would
+# authorize that namespace NAME in every project, which narrows nothing and
+# reads as though it does. The narrowest scope the platform can express is
+# therefore (project) x (resource type) x (verb).
+#
+# ---------------------------------------------------------------------------
+# THE IDENTITY, WHICH HAS TO BE CREATED TOO
+#
+# The subject below is the CN of a client certificate that does not exist yet.
+# Three objects are needed, mirroring the NSO cell's own:
+#
+#   1. A Certificate on the control plane issuing CN
+#      system:egress-address@cloud.datumapis.com, pushed to GCP Secret Manager
+#      under the key egress-address-ipam-client-cert. Mirror
+#      apps/network-services-operator/control-plane/staging/
+#        cell-ipam-client-certificate.yaml
+#
+#   2. An ExternalSecret in each cell syncing it into a Secret named
+#      egress-address-ipam-kubeconfig, with a templated kubeconfig whose server
+#      is Milo's TLS-passthrough base URL -- NOT a per-project endpoint, because
+#      the client appends the project path to every request. Mirror
+#      apps/network-services-operator/cell/ipam-client-cert.yaml, changing the
+#      Secret name and the user name.
+#
+#      The Secret name must NOT be ipam-cluster-kubeconfig. That name is the NSO
+#      cell controller's own credential, which authenticates as system:nso-cell
+#      and additionally carries delete on IPAllocations; reusing it would hand
+#      this component a broader identity silently.
+#
+#   3. This grant.
+#
+# ---------------------------------------------------------------------------
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: egress-address-ipam
+rules:
+  # get, to find the address a shard already holds before drawing another --
+  # the claim is the record, and reading it first is what makes the allocation
+  # idempotent. create, to draw one. delete, to give it back once the shard it
+  # was named for is gone.
+  - apiGroups: ["ipam.miloapis.com"]
+    resources: ["ipclaims"]
+    verbs: ["get", "create", "delete"]
+  # Read only, and only to recover the address an allocation retained by an
+  # earlier claim of the same name still holds. The service refuses the create
+  # and names that allocation, so without this the address is unreachable and
+  # the shard stays unaddressed behind a conflict that never clears.
+  #
+  # Deliberately no delete, unlike the NSO cell's grant. Claims here are written
+  # with reclaim policy Delete, so removing the claim frees the address; nothing
+  # this component does needs to reach past it to the allocation.
+  - apiGroups: ["ipam.miloapis.com"]
+    resources: ["ipallocations"]
+    verbs: ["get"]
+  # No ipclasses rule, unlike both existing grants. This component never reads
+  # a class: it names one on a claim and the service resolves it server-side.
+  # The "use" check on a class applies to creating a cross-project class
+  # reference, which nothing here does.
+  #
+  # No pools and no classes under any verb. Address space is operator
+  # inventory, and a component that allocates from it has no reason to be able
+  # to change its shape.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: egress-address-ipam
+subjects:
+  # CN of the certificate described above. Every cell shares this identity;
+  # nothing here distinguishes one cell from another, so the grant cannot be
+  # narrowed per location either.
+  - kind: User
+    apiGroup: rbac.authorization.k8s.io
+    name: system:egress-address@cloud.datumapis.com
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: egress-address-ipam

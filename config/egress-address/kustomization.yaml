@@ -16,6 +16,12 @@
 # every marker under ./internal/..., so every role this image runs shares a role
 # and a ServiceAccount name.
 #
+# The authorization this component needs is NOT here. It is applied to the Milo
+# control plane rather than to a cell, so it would be wrong for this overlay to
+# carry it: see milo-grant.yaml beside this file for the grant, the certificate
+# and Secret that have to exist with it, and why the scope cannot be narrowed
+# to one project by RBAC or to one namespace by anything.
+#
 # The EgressShard CRD is not included here. It belongs to
 # go.datum.net/network and is installed by the data plane that owns it, not by
 # a consumer of it.

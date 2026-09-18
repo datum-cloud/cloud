@@ -43,7 +43,7 @@ spec:
             - --claim-namespace=$(CLAIM_NAMESPACE)
             - --location=$(LOCATION)
             - --platform-project=$(PLATFORM_PROJECT)
-            - --ipam-kubeconfig=/etc/ipam-cluster/kubeconfig
+            - --ipam-kubeconfig=/etc/egress-address-ipam/kubeconfig
           env:
             # The class that hands out shard addresses. Required; a deployment
             # naming no class refuses to start rather than draw from a default
@@ -91,10 +91,44 @@ spec:
             limits:
               memory: 256Mi
           volumeMounts:
-            - name: ipam-cluster-kubeconfig
-              mountPath: /etc/ipam-cluster
+            - name: egress-address-ipam-kubeconfig
+              mountPath: /etc/egress-address-ipam
               readOnly: true
       volumes:
+        # BLAST RADIUS OF THIS CREDENTIAL. Read this before widening it.
+        #
+        # It is a client certificate authenticating to Milo as
+        # system:egress-address@cloud.datumapis.com, and it is what lets this
+        # component claim addresses in the platform's own project -- the tenancy
+        # holding every platform-owned allocation, including the fabric
+        # identities a network's forwarding state is keyed on. There is one of
+        # these per cell, and a cell is the least trusted cluster in the fleet.
+        #
+        # The narrowest scope the platform can express is (project) x (resource
+        # type) x (verb), and RBAC alone cannot even do the project: Milo
+        # carries the project in the caller's user extras, which RBAC does not
+        # read. Per-namespace scoping does not exist at all -- IPAM declares
+        # Project as the only parent of an IPClaim -- so "claims in one
+        # namespace" is not a grant that can be written. See
+        # ../../egress-address/milo-grant.yaml for the grant and the reasoning.
+        #
+        # What a compromised holder could therefore do: create, read and delete
+        # IPClaims, and read IPAllocations, in ANY project, under any class it
+        # can name. Deleting a claim of a class whose reclaim policy is Delete
+        # releases that address for reissue, so the reachable damage includes
+        # taking another shard's or another consumer's address out from under
+        # it.
+        #
+        # What it could not do: change a pool or a class, because no grant here
+        # includes them; take an address already written into a shard's spec,
+        # because those fields are write-once; or reach any consumer's workload
+        # or control plane, because nothing else is bound to this identity.
+        #
+        # It is deliberately NOT the cell controller's ipam-cluster-kubeconfig,
+        # which authenticates as system:nso-cell and additionally carries delete
+        # on IPAllocations. Sharing that Secret name would silently hand this
+        # component the broader identity.
+        #
         # Not optional. This component does one thing and cannot do it without
         # the address service. A pod waiting in ContainerCreating for a
         # credential that has not landed says so plainly; one started against an
@@ -105,14 +139,7 @@ spec:
         # identity controller, everything this reads and writes in the cluster
         # is local: an EgressShard names a Node, so it never exists anywhere but
         # the cell holding that Node.
-        #
-        # This credential authenticates to the platform's own project, which is
-        # the tenancy holding every platform-owned allocation. It must be scoped
-        # to this component's job and no more -- "use" on the one address class
-        # and write access to IPClaims in the one namespace -- because a cell is
-        # the least trusted cluster in the fleet and there is one of these
-        # credentials per cell.
-        - name: ipam-cluster-kubeconfig
+        - name: egress-address-ipam-kubeconfig
           secret:
-            secretName: ipam-cluster-kubeconfig
+            secretName: egress-address-ipam-kubeconfig
       terminationGracePeriodSeconds: 10
