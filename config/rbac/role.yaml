@@ -12,13 +12,32 @@ rules:
   - create
   - patch
 - apiGroups:
-  - cloud.datumapis.com
+  - ""
   resources:
-  - egressshardparameters
+  - nodes
   verbs:
   - get
   - list
   - watch
+- apiGroups:
+  - cloud.datumapis.com
+  resources:
+  - egressshardparameters
+  - egressshardpools
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - cloud.datumapis.com
+  resources:
+  - egressshardpools/status
+  - vpcattachments/status
+  - vpcs/status
+  verbs:
+  - get
+  - patch
+  - update
 - apiGroups:
   - cloud.datumapis.com
   resources:
@@ -33,15 +52,6 @@ rules:
   - patch
   - update
   - watch
-- apiGroups:
-  - cloud.datumapis.com
-  resources:
-  - vpcattachments/status
-  - vpcs/status
-  verbs:
-  - get
-  - patch
-  - update
 - apiGroups:
   - compute.datumapis.com
   resources:
@@ -79,8 +89,16 @@ rules:
   resources:
   - bgpadvertisements
   - bgprouters
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - network.datumapis.com
+  resources:
   - egressshards
   verbs:
+  - create
   - get
   - list
   - watch
