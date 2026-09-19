@@ -1,0 +1,145 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: egress-address-controller
+  namespace: system
+  labels:
+    app.kubernetes.io/name: egress-address-controller
+    app.kubernetes.io/component: egress-address-controller
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  # A shard's address is decided once and cannot be reassigned. Leader election
+  # is what keeps that true across a rollout; the replica count is not.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: egress-address-controller
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: manager
+      labels:
+        app.kubernetes.io/name: egress-address-controller
+        app.kubernetes.io/component: egress-address-controller
+    spec:
+      serviceAccountName: vpc-controller
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: manager
+          image: ghcr.io/datum-cloud/vpc-controller
+          command:
+            - /egress-address-controller
+          # Args reference env vars so an overlay can retarget any value with a
+          # strategic-merge patch on env, matched by name, instead of rewriting
+          # the args list.
+          args:
+            - --leader-elect
+            - --health-probe-bind-address=:8081
+            - --metrics-bind-address=:8080
+            - --address-class-ipv6=$(ADDRESS_CLASS_IPV6)
+            - --claim-namespace=$(CLAIM_NAMESPACE)
+            - --location=$(LOCATION)
+            - --platform-project=$(PLATFORM_PROJECT)
+            - --ipam-kubeconfig=/etc/egress-address-ipam/kubeconfig
+          env:
+            # The class that hands out shard addresses. Required; a deployment
+            # naming no class refuses to start rather than draw from a default
+            # that would hand a shard a private address nothing routes.
+            - name: ADDRESS_CLASS_IPV6
+              value: datum-egress-shard-address-ipv6
+            - name: CLAIM_NAMESPACE
+              value: default
+            # The location this cell serves, which must equal the cell's own
+            # topology.datum.net/location label. Required and deployment
+            # specific: a cell claiming under another location's name is handed
+            # an address that location's fabric attracts, and the assignment
+            # cannot be taken back.
+            - name: LOCATION
+              value: ""
+            # A shard's address is not a consumer's address, so the claim is
+            # written in a project the platform owns. Required and
+            # deployment-specific.
+            - name: PLATFORM_PROJECT
+              value: ""
+          ports:
+            - name: metrics
+              containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          volumeMounts:
+            - name: egress-address-ipam-kubeconfig
+              mountPath: /etc/egress-address-ipam
+              readOnly: true
+      volumes:
+        # BLAST RADIUS OF THIS CREDENTIAL. Read this before widening it.
+        #
+        # It is a client certificate authenticating to Milo as
+        # system:egress-address@cloud.datumapis.com, and it is what lets this
+        # component claim addresses in the platform's own project -- the tenancy
+        # holding every platform-owned allocation, including the fabric
+        # identities a network's forwarding state is keyed on. There is one of
+        # these per cell, and a cell is the least trusted cluster in the fleet.
+        #
+        # The narrowest scope the platform can express is (project) x (resource
+        # type) x (verb), and RBAC alone cannot even do the project: Milo
+        # carries the project in the caller's user extras, which RBAC does not
+        # read. Per-namespace scoping does not exist at all -- IPAM declares
+        # Project as the only parent of an IPClaim -- so "claims in one
+        # namespace" is not a grant that can be written. See
+        # ../../egress-address/milo-grant.yaml for the grant and the reasoning.
+        #
+        # What a compromised holder could therefore do: create, read and delete
+        # IPClaims, and read IPAllocations, in ANY project, under any class it
+        # can name. Deleting a claim of a class whose reclaim policy is Delete
+        # releases that address for reissue, so the reachable damage includes
+        # taking another shard's or another consumer's address out from under
+        # it.
+        #
+        # What it could not do: change a pool or a class, because no grant here
+        # includes them; take an address already written into a shard's spec,
+        # because those fields are write-once; or reach any consumer's workload
+        # or control plane, because nothing else is bound to this identity.
+        #
+        # It is deliberately NOT the cell controller's ipam-cluster-kubeconfig,
+        # which authenticates as system:nso-cell and additionally carries delete
+        # on IPAllocations. Sharing that Secret name would silently hand this
+        # component the broader identity.
+        #
+        # Not optional. This component does one thing and cannot do it without
+        # the address service. A pod waiting in ContainerCreating for a
+        # credential that has not landed says so plainly; one started against an
+        # empty dir crashloops until the kubelet's next volume resync, which
+        # reads as a broken image rather than a missing secret.
+        #
+        # There is deliberately no second mount. Unlike the central fabric
+        # identity controller, everything this reads and writes in the cluster
+        # is local: an EgressShard names a Node, so it never exists anywhere but
+        # the cell holding that Node.
+        - name: egress-address-ipam-kubeconfig
+          secret:
+            secretName: egress-address-ipam-kubeconfig
+      terminationGracePeriodSeconds: 10
