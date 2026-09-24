@@ -33,9 +33,9 @@ import (
 	bgpv1alpha1 "go.datum.net/network/api/v1alpha1"
 )
 
-// egressContextName is the network context every egress test binds, and
-// therefore the name of the one claim that binds it.
-const egressContextName = "default-us-central-1"
+// egressAttachmentName is the attachment every egress test records, and
+// therefore the name of the one claim recording it.
+const egressAttachmentName = "web-eth0"
 
 func newBinder(t *testing.T, objects ...client.Object) (*EgressShardClaimReconciler, client.Client) {
 	t.Helper()
@@ -52,22 +52,47 @@ func newBinder(t *testing.T, objects ...client.Object) (*EgressShardClaimReconci
 	}
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).
-		WithStatusSubresource(&cloudv1alpha1.EgressShardClaim{}, &networkingv1alpha.NetworkContext{}).
+		WithStatusSubresource(&cloudv1alpha1.EgressShardClaim{}, &cloudv1alpha1.VPCAttachment{}).
 		Build()
 	return &EgressShardClaimReconciler{Client: fakeClient, Scheme: scheme}, fakeClient
 }
 
-// newBoundContext is the location the binder works from: the projected intent,
-// with the network it belongs to named.
-func newBoundContext(mode networkingv1alpha.NetworkInternetEgressMode) *networkingv1alpha.NetworkContext {
-	networkContext := newEgressContext(mode)
-	networkContext.Spec.Network = networkingv1alpha.LocalNetworkRef{Name: "default"}
-	return networkContext
+// newLandedAttachment is an attachment of the egress test network that has
+// reported the node it landed on.
+func newLandedAttachment(node string) *cloudv1alpha1.VPCAttachment {
+	attachment := &cloudv1alpha1.VPCAttachment{}
+	attachment.Namespace = egressTestNamespace
+	attachment.Name = egressAttachmentName
+	attachment.Spec.VPC = cloudv1alpha1.VPCRef{Name: "default-us-central-1"}
+	attachment.Spec.Interface.Name = "eth0"
+	attachment.Status.Node = node
+	return attachment
+}
+
+// newEgressClaim is a record already written for the test attachment, bound
+// to shardName or, with an empty name, still unbound.
+func newEgressClaim(shardName string) *cloudv1alpha1.EgressShardClaim {
+	claim := &cloudv1alpha1.EgressShardClaim{}
+	claim.Namespace = egressTestNamespace
+	claim.Name = egressAttachmentName
+	claim.Spec = cloudv1alpha1.EgressShardClaimSpec{
+		Attachment: cloudv1alpha1.AttachmentRef{Name: egressAttachmentName},
+		NodeName:   egressTestNode,
+		Families:   []cloudv1alpha1.InternetEgressAddressFamily{cloudv1alpha1.InternetEgressAddressFamilyIPv6},
+	}
+	if shardName != "" {
+		claim.Labels = map[string]string{cloudv1alpha1.LabelEgressShardClaimShard: shardName}
+		claim.Status.ShardRef = &cloudv1alpha1.EgressShardReference{
+			Namespace: egressShardNamespace,
+			Name:      shardName,
+		}
+	}
+	return claim
 }
 
 func reconcileBinding(t *testing.T, r *EgressShardClaimReconciler) {
 	t.Helper()
-	key := client.ObjectKey{Namespace: egressTestNamespace, Name: egressContextName}
+	key := client.ObjectKey{Namespace: egressTestNamespace, Name: egressAttachmentName}
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key}); err != nil {
 		t.Fatalf("reconcile the claim: %v", err)
 	}
@@ -76,7 +101,7 @@ func reconcileBinding(t *testing.T, r *EgressShardClaimReconciler) {
 func readClaim(t *testing.T, cl client.Client) *cloudv1alpha1.EgressShardClaim {
 	t.Helper()
 	var claim cloudv1alpha1.EgressShardClaim
-	key := client.ObjectKey{Namespace: egressTestNamespace, Name: egressContextName}
+	key := client.ObjectKey{Namespace: egressTestNamespace, Name: egressAttachmentName}
 	if err := cl.Get(t.Context(), key, &claim); err != nil {
 		t.Fatalf("get the claim: %v", err)
 	}
@@ -86,157 +111,133 @@ func readClaim(t *testing.T, cl client.Client) *cloudv1alpha1.EgressShardClaim {
 func claimExists(t *testing.T, cl client.Client) bool {
 	t.Helper()
 	var claim cloudv1alpha1.EgressShardClaim
-	key := client.ObjectKey{Namespace: egressTestNamespace, Name: egressContextName}
-	err := cl.Get(t.Context(), key, &claim)
-	return err == nil
+	key := client.ObjectKey{Namespace: egressTestNamespace, Name: egressAttachmentName}
+	return cl.Get(t.Context(), key, &claim) == nil
 }
 
-// One claim per network context that declares egress, carrying the terms the
-// projection resolved and nothing this controller invented.
-func TestBinderClaimsOncePerNetworkContext(t *testing.T) {
-	r, cl := newBinder(t, newBoundContext(networkingv1alpha.NetworkInternetEgressEnabled),
-		newEgressParameters(),
-		newEgressShard("shard-a", "2001:db8:ff01::", "2001:db8:f00d::100", poolLabels()))
+// One claim per attachment that has landed on a node, carrying the node and
+// the families the network declared and nothing this controller invented.
+func TestBinderRecordsOncePerAttachment(t *testing.T) {
+	r, cl := newBinder(t, newEgressContext(networkingv1alpha.NetworkInternetEgressEnabled),
+		newLandedAttachment(egressTestNode),
+		newEgressShard("worker-3-egress", egressTestNode, "2001:db8:ff01::", "2001:db8:f00d::100"))
 
 	reconcileBinding(t, r)
 
 	claim := readClaim(t, cl)
-	if claim.Spec.Network.Name != "default" {
-		t.Errorf("network: got %q, want default", claim.Spec.Network.Name)
+	if claim.Spec.Attachment.Name != egressAttachmentName {
+		t.Errorf("attachment: got %q, want %q", claim.Spec.Attachment.Name, egressAttachmentName)
 	}
-	if claim.Spec.NetworkContext.Name != egressContextName {
-		t.Errorf("network context: got %q, want %q", claim.Spec.NetworkContext.Name, egressContextName)
-	}
-	if claim.Spec.ClassName != "shared" {
-		t.Errorf("class: got %q, want shared", claim.Spec.ClassName)
-	}
-	if claim.Spec.Sharing != cloudv1alpha1.EgressSharingShared {
-		t.Errorf("sharing: got %q, want Shared", claim.Spec.Sharing)
+	if claim.Spec.NodeName != egressTestNode {
+		t.Errorf("node: got %q, want %q", claim.Spec.NodeName, egressTestNode)
 	}
 	if len(claim.Spec.Families) != 1 ||
 		claim.Spec.Families[0] != cloudv1alpha1.InternetEgressAddressFamilyIPv6 {
 		t.Errorf("families: got %v, want [IPv6]", claim.Spec.Families)
 	}
-	// The claim names no shard, no selector, no address and no pool: the cell
-	// answers with the shard, and it answers on status.
 	if claim.Status.ShardRef != nil {
-		t.Errorf("the claim bound %v in the pass that wrote it", claim.Status.ShardRef)
+		t.Errorf("the claim recorded %v in the pass that wrote it", claim.Status.ShardRef)
+	}
+	if !metav1.IsControlledBy(claim, newLandedAttachment(egressTestNode)) &&
+		len(claim.OwnerReferences) == 0 {
+		t.Error("the claim is not owned by its attachment")
 	}
 }
 
-func TestBinderBindsTheClaimToAShard(t *testing.T) {
-	r, cl := newBinder(t, newBoundContext(networkingv1alpha.NetworkInternetEgressEnabled),
-		newEgressParameters(),
-		newEgressShard("shard-b", "2001:db8:ff02::", "2001:db8:f00d::200", poolLabels()),
-		newEgressShard("shard-a", "2001:db8:ff01::", "2001:db8:f00d::100", poolLabels()))
+// Nothing is recorded before the attachment reports where it landed. The node
+// is the whole content of the record.
+func TestBinderWaitsForTheAttachmentsNode(t *testing.T) {
+	r, cl := newBinder(t, newEgressContext(networkingv1alpha.NetworkInternetEgressEnabled),
+		newLandedAttachment(""),
+		newEgressShard("worker-3-egress", egressTestNode, "2001:db8:ff01::", "2001:db8:f00d::100"))
+
+	reconcileBinding(t, r)
+
+	if claimExists(t, cl) {
+		t.Error("a claim was written for an attachment on no known node")
+	}
+}
+
+// The shard recorded is the one on the attachment's node and no other.
+func TestBinderRecordsTheShardOnTheNode(t *testing.T) {
+	r, cl := newBinder(t, newEgressContext(networkingv1alpha.NetworkInternetEgressEnabled),
+		newLandedAttachment(egressTestNode),
+		newEgressShard("worker-2-egress", "worker-2", "2001:db8:ff02::", "2001:db8:f00d::200"),
+		newEgressShard("worker-3-egress", egressTestNode, "2001:db8:ff01::", "2001:db8:f00d::100"))
 
 	reconcileBinding(t, r)
 	reconcileBinding(t, r)
 
 	claim := readClaim(t, cl)
 	if claim.Status.ShardRef == nil {
-		t.Fatal("two usable shards bound nothing")
+		t.Fatal("a shard on the node recorded nothing")
 	}
-	// Name order, moved here with the selection it belongs to: the binding has
-	// to be deterministic over the set of shards it saw.
-	if claim.Status.ShardRef.Name != "shard-a" {
-		t.Errorf("shard: got %q, want shard-a", claim.Status.ShardRef.Name)
+	if claim.Status.ShardRef.Name != "worker-3-egress" {
+		t.Errorf("shard: got %q, want worker-3-egress", claim.Status.ShardRef.Name)
 	}
 	if claim.Status.ShardRef.Namespace != egressShardNamespace {
 		t.Errorf("shard namespace: got %q, want %q", claim.Status.ShardRef.Namespace, egressShardNamespace)
 	}
-	// The label is what makes the shard's consumer set a list query, which is
-	// what stands in for the list of networks a shard does not hold.
-	if got := claim.Labels[cloudv1alpha1.LabelEgressShardClaimShard]; got != "shard-a" {
-		t.Errorf("shard label: got %q, want shard-a", got)
+	if got := claim.Labels[cloudv1alpha1.LabelEgressShardClaimShard]; got != "worker-3-egress" {
+		t.Errorf("shard label: got %q, want worker-3-egress", got)
 	}
 	assertClaimCondition(t, cl, metav1.ConditionTrue, cloudv1alpha1.EgressShardClaimReasonBound)
-	assertContextCondition(t, cl, metav1.ConditionTrue,
+	assertAttachmentCondition(t, cl, metav1.ConditionTrue,
 		networkingv1alpha.NetworkContextInternetEgressReasonReady)
 
 	// The finalizer is the only state a binder puts on a shard, written before
-	// the binding so a recorded binding is never held by nothing.
+	// the record so a recorded shard is never held by nothing.
 	var shard bgpv1alpha1.EgressShard
-	key := client.ObjectKey{Namespace: egressShardNamespace, Name: "shard-a"}
+	key := client.ObjectKey{Namespace: egressShardNamespace, Name: "worker-3-egress"}
 	if err := cl.Get(t.Context(), key, &shard); err != nil {
-		t.Fatalf("get the bound shard: %v", err)
+		t.Fatalf("get the recorded shard: %v", err)
 	}
 	if !controllerutil.ContainsFinalizer(&shard, cloudv1alpha1.FinalizerEgressShardBinding) {
-		t.Error("the bound shard is not held open")
-	}
-	// Nothing else is written to it. A shard holds no list of the networks it
-	// serves and no count of them.
-	if len(shard.Labels) != len(poolLabels()) {
-		t.Errorf("the binder wrote labels onto the shard: %v", shard.Labels)
+		t.Error("the recorded shard is not held open")
 	}
 	if shard.Spec.ShardAddressIPv6 != "2001:db8:f00d::100" {
 		t.Errorf("the binder rewrote the shard's address: %q", shard.Spec.ShardAddressIPv6)
 	}
 }
 
-// Many networks bind one shard. Nothing branches on the sharing a claim
-// records, because dedicated capacity is not offered.
-func TestBinderBindsManyNetworksToOneShard(t *testing.T) {
-	first := newEgressClaim("shard-a")
-	first.Name = "other-us-central-1"
-	first.Spec.Network.Name = "other"
-	first.Spec.NetworkContext.Name = "other-us-central-1"
-
-	r, cl := newBinder(t, newBoundContext(networkingv1alpha.NetworkInternetEgressEnabled),
-		newEgressParameters(), first,
-		newEgressShard("shard-a", "2001:db8:ff01::", "2001:db8:f00d::100", poolLabels()))
-
-	reconcileBinding(t, r)
-	reconcileBinding(t, r)
-
-	claim := readClaim(t, cl)
-	if claim.Status.ShardRef == nil || claim.Status.ShardRef.Name != "shard-a" {
-		t.Fatalf("got %v, want the shard another network already holds", claim.Status.ShardRef)
-	}
-}
-
-// A shard with no identifier has nothing a node can route toward, so binding it
-// would report egress that carries no packet. The claim waits, and the address
-// stays unpublished.
+// A node whose shard cannot be recorded leaves the claim unbound with the
+// reason, and the consumer reads a fact about their own instance.
 func TestBinderWaitsForAShardItCanUse(t *testing.T) {
+	mismatched := newEgressShard("worker-3-egress", egressTestNode, "2001:db8:ff01::", "2001:db8:f00d::100")
+	mismatched.Status.ShardSID = "2001:db8:ffff::"
+
 	tests := []struct {
 		name    string
 		objects []client.Object
 		reason  string
 	}{
 		{
-			name:    "no shard carries the class's labels",
-			objects: []client.Object{newEgressParameters()},
-			reason:  cloudv1alpha1.EgressShardClaimReasonNoShardMatchesTheClass,
+			name:   "no shard names the node",
+			reason: cloudv1alpha1.EgressShardClaimReasonNoShardOnNode,
 		},
 		{
-			name: "the only shard reports no identifier",
-			objects: []client.Object{newEgressParameters(),
-				newEgressShard("unprogrammed", "", "2001:db8:f00d::100", poolLabels())},
-			reason: cloudv1alpha1.EgressShardClaimReasonNoShardIdentifier,
+			name: "the shard reports no identifier",
+			objects: []client.Object{
+				newEgressShard("worker-3-egress", egressTestNode, "", "2001:db8:f00d::100")},
+			reason: cloudv1alpha1.EgressShardClaimReasonShardNotReady,
 		},
 		{
-			name: "the only shard translates no IPv6",
-			objects: []client.Object{newEgressParameters(),
-				newEgressShard("ipv4-only", "2001:db8:ff01::", "", map[string]string{
-					bgpv1alpha1.LabelEgressShardPool: "shared",
-					bgpv1alpha1.LabelEgressShardCell: "us-central-1",
-					bgpv1alpha1.LabelEgressShardIPv4: bgpv1alpha1.LabelValueEgressFamilyServed,
-				})},
-			reason: cloudv1alpha1.EgressShardClaimReasonNoShardMatchesTheClass,
+			name:    "the shard runs an identity its spec does not state",
+			objects: []client.Object{mismatched},
+			reason:  cloudv1alpha1.EgressShardClaimReasonShardMismatch,
 		},
 		{
-			name: "the only shard is being deleted",
-			objects: []client.Object{newEgressParameters(),
-				terminatingShard(newEgressShard("draining", "2001:db8:ff01::",
-					"2001:db8:f00d::100", poolLabels()))},
+			name: "the shard is being deleted",
+			objects: []client.Object{terminatingShard(
+				newEgressShard("worker-3-egress", egressTestNode, "2001:db8:ff01::", "2001:db8:f00d::100"))},
 			reason: cloudv1alpha1.EgressShardClaimReasonShardTerminating,
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			objects := append([]client.Object{
-				newBoundContext(networkingv1alpha.NetworkInternetEgressEnabled)}, test.objects...)
+				newEgressContext(networkingv1alpha.NetworkInternetEgressEnabled),
+				newLandedAttachment(egressTestNode)}, test.objects...)
 			r, cl := newBinder(t, objects...)
 
 			reconcileBinding(t, r)
@@ -244,12 +245,10 @@ func TestBinderWaitsForAShardItCanUse(t *testing.T) {
 
 			claim := readClaim(t, cl)
 			if claim.Status.ShardRef != nil {
-				t.Fatalf("bound %v, want nothing", claim.Status.ShardRef)
+				t.Fatalf("recorded %v, want nothing", claim.Status.ShardRef)
 			}
 			assertClaimCondition(t, cl, metav1.ConditionFalse, test.reason)
-			// The consumer reads a fact about their own network. Which shard
-			// refused it is on the claim, which is an operator's object.
-			assertContextCondition(t, cl, metav1.ConditionFalse,
+			assertAttachmentCondition(t, cl, metav1.ConditionFalse,
 				networkingv1alpha.NetworkContextInternetEgressReasonUnavailable)
 		})
 	}
@@ -258,82 +257,62 @@ func TestBinderWaitsForAShardItCanUse(t *testing.T) {
 // Egress that works and an address that cannot yet be stated are different
 // facts, and the condition says which.
 func TestBinderReportsThatNoAddressIsAllocatedYet(t *testing.T) {
-	r, cl := newBinder(t, newBoundContext(networkingv1alpha.NetworkInternetEgressEnabled),
-		newEgressParameters(),
-		newEgressShard("shard-a", "2001:db8:ff01::", "", poolLabels()))
+	r, cl := newBinder(t, newEgressContext(networkingv1alpha.NetworkInternetEgressEnabled),
+		newLandedAttachment(egressTestNode),
+		newEgressShard("worker-3-egress", egressTestNode, "2001:db8:ff01::", ""))
 
 	reconcileBinding(t, r)
 	reconcileBinding(t, r)
 
-	claim := readClaim(t, cl)
-	if claim.Status.ShardRef == nil {
-		t.Fatal("a shard with an identifier and no address bound nothing")
+	if readClaim(t, cl).Status.ShardRef == nil {
+		t.Fatal("a shard with an identifier and no address recorded nothing")
 	}
 	assertClaimCondition(t, cl, metav1.ConditionTrue, cloudv1alpha1.EgressShardClaimReasonBound)
-	assertContextCondition(t, cl, metav1.ConditionFalse,
+	assertAttachmentCondition(t, cl, metav1.ConditionFalse,
 		networkingv1alpha.NetworkContextInternetEgressReasonAddressUnavailable)
 }
 
-// Decided once. A shard that would sort ahead of the bound one arriving later
-// does not move a live network's egress, which is the address a consumer
-// allow-listed at their destination.
+// A record is not remade while the attachment stays where it is. A second
+// shard naming the node is an operator error, and the one already recorded
+// stands.
 func TestBinderNeverRebinds(t *testing.T) {
-	r, cl := newBinder(t, newBoundContext(networkingv1alpha.NetworkInternetEgressEnabled),
-		newEgressParameters(),
-		newEgressShard("shard-b", "2001:db8:ff02::", "2001:db8:f00d::200", poolLabels()))
+	r, cl := newBinder(t, newEgressContext(networkingv1alpha.NetworkInternetEgressEnabled),
+		newLandedAttachment(egressTestNode),
+		newEgressShard("worker-3-egress-b", egressTestNode, "2001:db8:ff02::", "2001:db8:f00d::200"))
 
 	reconcileBinding(t, r)
 	reconcileBinding(t, r)
-	if got := readClaim(t, cl).Status.ShardRef; got == nil || got.Name != "shard-b" {
-		t.Fatalf("got %v, want shard-b", got)
+	if got := readClaim(t, cl).Status.ShardRef; got == nil || got.Name != "worker-3-egress-b" {
+		t.Fatalf("got %v, want worker-3-egress-b", got)
 	}
 
-	earlier := newEgressShard("shard-a", "2001:db8:ff01::", "2001:db8:f00d::100", poolLabels())
+	earlier := newEgressShard("worker-3-egress-a", egressTestNode, "2001:db8:ff01::", "2001:db8:f00d::100")
 	if err := cl.Create(t.Context(), earlier); err != nil {
 		t.Fatalf("commission a shard sorting earlier: %v", err)
 	}
 	reconcileBinding(t, r)
-
-	if got := readClaim(t, cl).Status.ShardRef; got == nil || got.Name != "shard-b" {
-		t.Errorf("got %v, want the shard it was already bound to", got)
+	if got := readClaim(t, cl).Status.ShardRef; got == nil || got.Name != "worker-3-egress-b" {
+		t.Errorf("got %v, want the shard already recorded", got)
 	}
 }
 
-// Egress withdrawn is a claim released, which is what takes the route and the
-// address away and lets the shard go.
+// Egress withdrawn is a claim released, which lets the shard go.
 func TestBinderReleasesTheClaimWhenEgressIsWithdrawn(t *testing.T) {
+	unprojected := newEgressContext(networkingv1alpha.NetworkInternetEgressEnabled)
+	unprojected.Spec.Egress = nil
+
 	tests := []struct {
 		name           string
-		networkContext func() *networkingv1alpha.NetworkContext
+		networkContext *networkingv1alpha.NetworkContext
 	}{
-		{
-			name: "egress disabled",
-			networkContext: func() *networkingv1alpha.NetworkContext {
-				return newBoundContext(networkingv1alpha.NetworkInternetEgressDisabled)
-			},
-		},
-		{
-			name: "class served by another implementation",
-			networkContext: func() *networkingv1alpha.NetworkContext {
-				networkContext := newBoundContext(networkingv1alpha.NetworkInternetEgressEnabled)
-				networkContext.Spec.Egress.Internet.ParametersRef.Kind = "SomeOtherParameters"
-				return networkContext
-			},
-		},
-		{
-			name: "intent never projected",
-			networkContext: func() *networkingv1alpha.NetworkContext {
-				networkContext := newBoundContext(networkingv1alpha.NetworkInternetEgressEnabled)
-				networkContext.Spec.Egress = nil
-				return networkContext
-			},
-		},
+		{"egress disabled", newEgressContext(networkingv1alpha.NetworkInternetEgressDisabled)},
+		{"intent never projected", unprojected},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			r, cl := newBinder(t, test.networkContext(), newEgressParameters(),
-				newEgressClaim("shard-a"),
-				newEgressShard("shard-a", "2001:db8:ff01::", "2001:db8:f00d::100", poolLabels()))
+			r, cl := newBinder(t, test.networkContext, newLandedAttachment(egressTestNode),
+				newEgressClaim("worker-3-egress"),
+				newEgressShard("worker-3-egress", egressTestNode, "2001:db8:ff01::", "2001:db8:f00d::100"))
 
 			reconcileBinding(t, r)
 
@@ -344,152 +323,87 @@ func TestBinderReleasesTheClaimWhenEgressIsWithdrawn(t *testing.T) {
 	}
 }
 
-// A network no longer present in the cell takes its claim with it, rather than
-// holding a shard open for a location that does not exist.
-func TestBinderReleasesTheClaimWhenTheNetworkLeaves(t *testing.T) {
-	r, cl := newBinder(t, newEgressParameters(), newEgressClaim("shard-a"),
-		newEgressShard("shard-a", "2001:db8:ff01::", "2001:db8:f00d::100", poolLabels()))
+// An attachment that is gone takes its record with it, rather than holding a
+// shard open for an instance that no longer exists.
+func TestBinderReleasesTheClaimWhenTheAttachmentLeaves(t *testing.T) {
+	r, cl := newBinder(t, newEgressContext(networkingv1alpha.NetworkInternetEgressEnabled),
+		newEgressClaim("worker-3-egress"),
+		newEgressShard("worker-3-egress", egressTestNode, "2001:db8:ff01::", "2001:db8:f00d::100"))
 
 	reconcileBinding(t, r)
 
 	if claimExists(t, cl) {
-		t.Error("the claim survived its network context")
+		t.Error("the claim survived its attachment")
 	}
 }
 
-// Parameters an operator has not written in this cell are an answer, not a
-// silent nothing: the class this cell was pointed at does not exist here.
-func TestBinderReportsAbsentParameters(t *testing.T) {
-	r, cl := newBinder(t, newBoundContext(networkingv1alpha.NetworkInternetEgressEnabled))
+// An attachment that moved nodes is a different record. The spec is immutable,
+// so the stale one is released and the next pass writes the new one.
+func TestBinderReplacesTheRecordWhenTheAttachmentMovesNodes(t *testing.T) {
+	r, cl := newBinder(t, newEgressContext(networkingv1alpha.NetworkInternetEgressEnabled),
+		newLandedAttachment("worker-4"),
+		newEgressClaim("worker-3-egress"),
+		newEgressShard("worker-3-egress", egressTestNode, "2001:db8:ff01::", "2001:db8:f00d::100"),
+		newEgressShard("worker-4-egress", "worker-4", "2001:db8:ff04::", "2001:db8:f00d::400"))
+
+	reconcileBinding(t, r)
+	if claimExists(t, cl) {
+		t.Fatal("a record for the node the attachment left was kept")
+	}
+
+	reconcileBinding(t, r)
+	reconcileBinding(t, r)
+	claim := readClaim(t, cl)
+	if claim.Spec.NodeName != "worker-4" {
+		t.Errorf("node: got %q, want worker-4", claim.Spec.NodeName)
+	}
+	if claim.Status.ShardRef == nil || claim.Status.ShardRef.Name != "worker-4-egress" {
+		t.Errorf("shard: got %v, want worker-4-egress", claim.Status.ShardRef)
+	}
+}
+
+// A label lost to an edit would hide an attachment from the query a shard's
+// consumer set is counted by, so it is re-asserted on every pass.
+func TestBinderRepairsTheShardLabel(t *testing.T) {
+	claim := newEgressClaim("worker-3-egress")
+	claim.Labels = nil
+	r, cl := newBinder(t, newEgressContext(networkingv1alpha.NetworkInternetEgressEnabled),
+		newLandedAttachment(egressTestNode), claim,
+		newEgressShard("worker-3-egress", egressTestNode, "2001:db8:ff01::", "2001:db8:f00d::100"))
 
 	reconcileBinding(t, r)
 
-	if claimExists(t, cl) {
-		t.Error("a claim was written for a class this cell cannot serve")
+	if got := readClaim(t, cl).Labels[cloudv1alpha1.LabelEgressShardClaimShard]; got != "worker-3-egress" {
+		t.Errorf("shard label: got %q, want worker-3-egress", got)
 	}
-	assertContextCondition(t, cl, metav1.ConditionFalse,
+}
+
+// A recorded shard that vanished is said on both objects. Nothing rebinds.
+func TestBinderReportsAMissingShard(t *testing.T) {
+	r, cl := newBinder(t, newEgressContext(networkingv1alpha.NetworkInternetEgressEnabled),
+		newLandedAttachment(egressTestNode),
+		newEgressClaim("worker-3-egress"))
+
+	reconcileBinding(t, r)
+
+	assertClaimCondition(t, cl, metav1.ConditionFalse, cloudv1alpha1.EgressShardClaimReasonShardMissing)
+	assertAttachmentCondition(t, cl, metav1.ConditionFalse,
 		networkingv1alpha.NetworkContextInternetEgressReasonUnavailable)
 }
 
-// Sharing decides nothing here, but an unprojected value still means the claim
-// cannot record what it was created under, and a claim is refused rather than
-// written with a guess.
-func TestBinderRefusesTermsItCannotRecord(t *testing.T) {
-	tests := []struct {
-		name  string
-		amend func(*networkingv1alpha.NetworkContext)
-	}{
-		{
-			name: "sharing never projected",
-			amend: func(networkContext *networkingv1alpha.NetworkContext) {
-				networkContext.Spec.Egress.Internet.Sharing = ""
-			},
-		},
-		{
-			name: "no address family to reach",
-			amend: func(networkContext *networkingv1alpha.NetworkContext) {
-				networkContext.Spec.Egress.Internet.Reach = nil
-			},
-		},
-		{
-			name: "location names no network",
-			amend: func(networkContext *networkingv1alpha.NetworkContext) {
-				networkContext.Spec.Network = networkingv1alpha.LocalNetworkRef{}
-			},
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			networkContext := newBoundContext(networkingv1alpha.NetworkInternetEgressEnabled)
-			test.amend(networkContext)
-			r, cl := newBinder(t, networkContext, newEgressParameters(),
-				newEgressShard("shard-a", "2001:db8:ff01::", "2001:db8:f00d::100", poolLabels()))
-
-			reconcileBinding(t, r)
-
-			if claimExists(t, cl) {
-				t.Error("a claim was written from terms it could not record")
-			}
-			assertContextCondition(t, cl, metav1.ConditionFalse,
-				networkingv1alpha.NetworkContextInternetEgressReasonUnavailable)
-		})
-	}
-}
-
-// The terms are immutable, so a class change reaching a bound location cannot
-// be applied to the binding. The binding keeps delivering what it was made for
-// and says it no longer matches.
-func TestBinderKeepsABindingWhoseTermsChanged(t *testing.T) {
-	networkContext := newBoundContext(networkingv1alpha.NetworkInternetEgressEnabled)
-	networkContext.Spec.Egress.Internet.ClassName = "some-other-class"
-
-	r, cl := newBinder(t, networkContext, newEgressParameters(), newEgressClaim("shard-a"),
-		newEgressShard("shard-a", "2001:db8:ff01::", "2001:db8:f00d::100", poolLabels()))
-
-	reconcileBinding(t, r)
-
-	claim := readClaim(t, cl)
-	if claim.Status.ShardRef == nil || claim.Status.ShardRef.Name != "shard-a" {
-		t.Fatalf("got %v, want the binding it already had", claim.Status.ShardRef)
-	}
-	assertClaimCondition(t, cl, metav1.ConditionFalse,
-		cloudv1alpha1.EgressShardClaimReasonTermsChanged)
-}
-
-// An unbound claim whose terms changed is discarded rather than kept, because
-// nothing is bound to protect and the next pass writes one that matches.
-func TestBinderDiscardsAnUnboundClaimWhoseTermsChanged(t *testing.T) {
-	networkContext := newBoundContext(networkingv1alpha.NetworkInternetEgressEnabled)
-	networkContext.Spec.Egress.Internet.ClassName = "some-other-class"
-
-	r, cl := newBinder(t, networkContext, newEgressParameters(), newEgressClaim(""),
-		newEgressShard("shard-a", "2001:db8:ff01::", "2001:db8:f00d::100", poolLabels()))
-
-	reconcileBinding(t, r)
-
-	if claimExists(t, cl) {
-		t.Error("an unbound claim with stale terms was kept")
-	}
-}
-
-// A label lost to an edit would hide a network from the query a shard's
-// consumer set is counted by, so it is re-asserted on every pass.
-func TestBinderRepairsTheShardLabel(t *testing.T) {
-	claim := newEgressClaim("shard-a")
-	claim.Labels = nil
-
-	r, cl := newBinder(t, newBoundContext(networkingv1alpha.NetworkInternetEgressEnabled),
-		newEgressParameters(), claim,
-		newEgressShard("shard-a", "2001:db8:ff01::", "2001:db8:f00d::100", poolLabels()))
-
-	reconcileBinding(t, r)
-
-	if got := readClaim(t, cl).Labels[cloudv1alpha1.LabelEgressShardClaimShard]; got != "shard-a" {
-		t.Errorf("shard label: got %q, want shard-a", got)
-	}
-}
-
 // Degraded means egress works for some declared families and not others. Only
-// one family is accepted anywhere on this path, so nothing may write it — the
-// reason stays defined and unreachable rather than being given a fabricated
-// path to reach it.
+// one family is accepted anywhere on this path, so nothing may write it.
 func TestBinderNeverReportsDegraded(t *testing.T) {
-	r, cl := newBinder(t, newBoundContext(networkingv1alpha.NetworkInternetEgressEnabled),
-		newEgressParameters(),
-		newEgressShard("shard-a", "2001:db8:ff01::", "2001:db8:f00d::100", poolLabels()))
+	r, cl := newBinder(t, newEgressContext(networkingv1alpha.NetworkInternetEgressEnabled),
+		newLandedAttachment(egressTestNode),
+		newEgressShard("worker-3-egress", egressTestNode, "2001:db8:ff01::", "2001:db8:f00d::100"))
 
 	reconcileBinding(t, r)
 	reconcileBinding(t, r)
 
-	var networkContext networkingv1alpha.NetworkContext
-	key := client.ObjectKey{Namespace: egressTestNamespace, Name: egressContextName}
-	if err := cl.Get(t.Context(), key, &networkContext); err != nil {
-		t.Fatalf("get the network context: %v", err)
-	}
-	condition := meta.FindStatusCondition(networkContext.Status.Conditions,
-		networkingv1alpha.NetworkContextInternetEgressReady)
+	condition := attachmentEgressCondition(t, cl)
 	if condition == nil {
-		t.Fatal("the location reports no egress readiness")
+		t.Fatal("the attachment reports no egress readiness")
 	}
 	if condition.Reason == networkingv1alpha.NetworkContextInternetEgressReasonDegraded {
 		t.Error("Degraded was reported for a path that accepts one address family")
@@ -518,22 +432,27 @@ func assertClaimCondition(
 	}
 }
 
-func assertContextCondition(
+func attachmentEgressCondition(t *testing.T, cl client.Client) *metav1.Condition {
+	t.Helper()
+	var attachment cloudv1alpha1.VPCAttachment
+	key := client.ObjectKey{Namespace: egressTestNamespace, Name: egressAttachmentName}
+	if err := cl.Get(t.Context(), key, &attachment); err != nil {
+		t.Fatalf("get the attachment: %v", err)
+	}
+	return meta.FindStatusCondition(attachment.Status.Conditions,
+		cloudv1alpha1.ConditionTypeInternetEgressReady)
+}
+
+func assertAttachmentCondition(
 	t *testing.T, cl client.Client, status metav1.ConditionStatus, reason string,
 ) {
 	t.Helper()
-	var networkContext networkingv1alpha.NetworkContext
-	key := client.ObjectKey{Namespace: egressTestNamespace, Name: egressContextName}
-	if err := cl.Get(t.Context(), key, &networkContext); err != nil {
-		t.Fatalf("get the network context: %v", err)
-	}
-	condition := meta.FindStatusCondition(networkContext.Status.Conditions,
-		networkingv1alpha.NetworkContextInternetEgressReady)
+	condition := attachmentEgressCondition(t, cl)
 	if condition == nil {
-		t.Fatal("the location reports no egress readiness")
+		t.Fatal("the attachment reports no InternetEgressReady condition")
 	}
 	if condition.Status != status || condition.Reason != reason {
-		t.Errorf("InternetEgressReady: got %s/%s, want %s/%s",
+		t.Errorf("attachment InternetEgressReady: got %s/%s, want %s/%s",
 			condition.Status, condition.Reason, status, reason)
 	}
 }

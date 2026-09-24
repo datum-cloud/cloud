@@ -71,7 +71,7 @@ func heldOpen(t *testing.T, cl client.Client) bool {
 // every flow on it, and nothing rebinds a claim.
 func TestShardIsHeldOpenWhileANetworkIsBound(t *testing.T) {
 	r, cl := newShardBinder(t, newEgressClaim("shard-a"),
-		newEgressShard("shard-a", "2001:db8:ff01::", "2001:db8:f00d::100", poolLabels()))
+		newEgressShard("shard-a", egressTestNode, "2001:db8:ff01::", "2001:db8:f00d::100"))
 
 	reconcileShard(t, r)
 
@@ -83,7 +83,7 @@ func TestShardIsHeldOpenWhileANetworkIsBound(t *testing.T) {
 // A drained shard is released, which is what lets an operator decommission the
 // node it runs on.
 func TestShardIsReleasedWhenNoNetworkIsBound(t *testing.T) {
-	shard := newEgressShard("shard-a", "2001:db8:ff01::", "2001:db8:f00d::100", poolLabels())
+	shard := newEgressShard("shard-a", egressTestNode, "2001:db8:ff01::", "2001:db8:f00d::100")
 	shard.Finalizers = []string{cloudv1alpha1.FinalizerEgressShardBinding}
 	r, cl := newShardBinder(t, shard)
 
@@ -99,7 +99,7 @@ func TestShardIsReleasedWhenNoNetworkIsBound(t *testing.T) {
 func TestShardIsReleasedWhenAClaimHoldsOnlyTheLabel(t *testing.T) {
 	claim := newEgressClaim("shard-a")
 	claim.Status.ShardRef = nil
-	shard := newEgressShard("shard-a", "2001:db8:ff01::", "2001:db8:f00d::100", poolLabels())
+	shard := newEgressShard("shard-a", egressTestNode, "2001:db8:ff01::", "2001:db8:f00d::100")
 	shard.Finalizers = []string{cloudv1alpha1.FinalizerEgressShardBinding}
 	r, cl := newShardBinder(t, claim, shard)
 
@@ -115,7 +115,7 @@ func TestShardIsReleasedWhenAClaimHoldsOnlyTheLabel(t *testing.T) {
 func TestShardIgnoresAClaimBoundElsewhere(t *testing.T) {
 	claim := newEgressClaim("shard-a")
 	claim.Status.ShardRef.Namespace = "some-other-namespace"
-	shard := newEgressShard("shard-a", "2001:db8:ff01::", "2001:db8:f00d::100", poolLabels())
+	shard := newEgressShard("shard-a", egressTestNode, "2001:db8:ff01::", "2001:db8:f00d::100")
 	shard.Finalizers = []string{cloudv1alpha1.FinalizerEgressShardBinding}
 	r, cl := newShardBinder(t, claim, shard)
 

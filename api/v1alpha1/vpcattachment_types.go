@@ -28,6 +28,12 @@ const (
 	// NetworkAttachmentDefinition is written.
 	ConditionTypeReady = "Ready"
 
+	// ConditionTypeInternetEgressReady reports whether this attachment's
+	// outbound traffic reaches the destinations its network declared. It is
+	// written by the controller that records the shard on the attachment's
+	// node, and read back onto the interface a consumer holds.
+	ConditionTypeInternetEgressReady = "InternetEgressReady"
+
 	// ConditionTypeProgrammed reports that the data plane realized the attachment.
 	ConditionTypeProgrammed = "Programmed"
 )
@@ -127,6 +133,11 @@ type InternetEgressAddressFamily string
 
 // InternetEgressAddressFamilyIPv6 is an IPv6 egress source address.
 const InternetEgressAddressFamilyIPv6 InternetEgressAddressFamily = "IPv6"
+
+// InternetEgressAddressFamilyIPv4 is an IPv4 egress source address. The
+// family type does not admit it yet, so nothing can ask for it; it is defined
+// so the binder's family check means today what it will mean then.
+const InternetEgressAddressFamilyIPv4 InternetEgressAddressFamily = "IPv4"
 
 // InternetEgressAddressStability is how far a consumer may rely on an egress
 // source address. It is the consumer-side projection of the serving class's

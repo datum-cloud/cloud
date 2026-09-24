@@ -15,11 +15,11 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.network.name
-      name: Network
+    - jsonPath: .spec.attachment.name
+      name: Attachment
       type: string
-    - jsonPath: .spec.sharing
-      name: Sharing
+    - jsonPath: .spec.nodeName
+      name: Node
       type: string
     - jsonPath: .status.shardRef.name
       name: Shard
@@ -37,17 +37,12 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          EgressShardClaim is one network being bound to one egress shard in this cell.
+          EgressShardClaim records one attachment's egress shard: the shard on the
+          node the attachment landed on.
 
-          There is one claim per network context that declares egress — not one per
-          interface and not one per attachment. The binding has to outlive the
-          workloads using it: an instance is replaced routinely, and a binding that
-          followed an attachment would move a network's source address every time that
-          happened, which is the address a consumer allow-listed at their destination.
-
-          The claim names no shard, no selector, no address and no pool. It states what
-          the network needs and the cell answers with which shard serves it, the same
-          division a subnet claim makes.
+          There is one claim per attachment, owned by it, so an attachment that goes
+          takes its record with it. The claim names no selector, no address and no
+          pool: the node is the binding, and the claim writes it down.
         properties:
           apiVersion:
             description: |-
@@ -67,21 +62,36 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec is the network being bound and the terms the binding
-              satisfies
+            description: |-
+              EgressShardClaimSpec is one attachment being recorded against the egress
+              shard on its node.
+
+              The claim decides nothing. The node already routes toward its own shard from
+              the moment the attachment exists; the claim records which shard that is, so
+              the binding is readable, so a node without a usable shard produces a
+              condition a consumer can see, and so a later tier that does select among
+              shards binds through the same object.
+
+              The whole spec is immutable. An attachment that lands on a different node is
+              a different record, so the claim is replaced rather than edited.
             properties:
-              className:
+              attachment:
                 description: |-
-                  ClassName is the InternetEgressClass resolved for this network. It is
-                  recorded rather than read: the class is cluster-scoped upstream and no
-                  copy of it reaches this cell.
-                maxLength: 253
-                minLength: 1
-                type: string
+                  Attachment is the attachment this claim records egress for. The claim
+                  carries the attachment's name and namespace, so the two are read by one
+                  key.
+                properties:
+                  name:
+                    description: Name of the VPCAttachment.
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
               families:
                 description: |-
-                  Families are the destination address families this binding has to reach,
-                  so the shard it binds is one that translates them.
+                  Families are the destination address families the network declared,
+                  so the shard on the node is one that translates them.
                 items:
                   description: |-
                     InternetEgressAddressFamily is the address family of an egress source
@@ -98,48 +108,24 @@ spec:
                 minItems: 1
                 type: array
                 x-kubernetes-list-type: set
-              network:
-                description: Network is the network reaching the internet.
-                properties:
-                  name:
-                    description: Name of the Network.
-                    minLength: 1
-                    type: string
-                required:
-                - name
-                type: object
-              networkContext:
+              nodeName:
                 description: |-
-                  NetworkContext is that network's presence in this cell, which is what
-                  makes the claim one per location.
-                properties:
-                  name:
-                    description: Name of the NetworkContext.
-                    minLength: 1
-                    type: string
-                required:
-                - name
-                type: object
-              sharing:
-                description: Sharing is how many networks that class allows on one
-                  shard.
-                enum:
-                - Shared
-                - Dedicated
+                  NodeName is the node the attachment landed on, and therefore the node
+                  whose shard serves it.
+                minLength: 1
                 type: string
             required:
-            - className
+            - attachment
             - families
-            - network
-            - networkContext
-            - sharing
+            - nodeName
             type: object
             x-kubernetes-validations:
-            - message: spec is immutable; a binding is decided once, so delete the
-                claim to ask for different terms
+            - message: spec is immutable; an attachment that moved nodes gets a new
+                claim
               rule: self == oldSelf
           status:
-            description: status is the binding
+            description: EgressShardClaimStatus is the shard an attachment was recorded
+              against.
             properties:
               conditions:
                 items:
@@ -205,27 +191,17 @@ spec:
                 type: integer
               shardRef:
                 description: |-
-                  ShardRef is the shard this network egresses through.
+                  ShardRef is the shard on the attachment's node.
 
-                  Absent means no shard is bound, which is what a location whose cell holds
-                  no usable shard reads. Nothing publishes an address or a route in that
-                  state: an address a consumer might allow-list is withheld until the
-                  platform can state which one their packets leave on.
-
-                  Present is permanent for this claim's life. It is written once, and
-                  nothing recomputes it: a rebinding would move a live VPC's egress to a
-                  different source address, which is the value a consumer allow-listed at
-                  their destination.
+                  Absent means the node holds no shard this claim can record, which is
+                  what an attachment on a node an operator has not commissioned reads.
                 properties:
                   name:
-                    description: Name of the shard.
+                    description: Name of the EgressShard.
                     minLength: 1
                     type: string
                   namespace:
-                    description: |-
-                      Namespace holding the shard. It is stated rather than assumed: the
-                      shards are in the namespace an operator gave the serving class, which is
-                      not the namespace a claim lives in.
+                    description: Namespace of the EgressShard.
                     minLength: 1
                     type: string
                 required:

@@ -383,7 +383,7 @@ func (r *NetworkInterfaceReconciler) resolveInternetEgress(
 	if attachment.Status.Node == "" {
 		return resolved, nil
 	}
-	shard, err := r.egressShardOnNode(ctx, attachment.Status.Node)
+	shard, err := egressShardOnNode(ctx, r.Client, attachment.Status.Node)
 	if err != nil {
 		return nil, err
 	}
@@ -433,11 +433,11 @@ func internetEgressIntent(
 // operator's to choose, and the node reference is what ties one to a node. Two
 // shards naming one node is an operator error, and the first by name is taken
 // so that every attachment on that node computes the same answer.
-func (r *NetworkInterfaceReconciler) egressShardOnNode(
-	ctx context.Context, node string,
+func egressShardOnNode(
+	ctx context.Context, reader client.Reader, node string,
 ) (*bgpv1alpha1.EgressShard, error) {
 	var shards bgpv1alpha1.EgressShardList
-	if err := r.List(ctx, &shards, client.InNamespace(galactic.SystemNamespace)); err != nil {
+	if err := reader.List(ctx, &shards, client.InNamespace(galactic.SystemNamespace)); err != nil {
 		return nil, fmt.Errorf("list egress shards: %w", err)
 	}
 	var found *bgpv1alpha1.EgressShard
