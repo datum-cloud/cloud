@@ -8,4 +8,3 @@ resources:
   - cloud.datumapis.com_networkfabricidentities.yaml
   # Cell-local: an operator writes one per InternetEgressClass this cell serves,
   # and only the controller in the cell reads it.
-  - cloud.datumapis.com_egressshardparameters.yaml

@@ -98,21 +98,28 @@ type BGPPlugin struct {
 	VPC           string `json:"vpc"`
 	VPCAttachment string `json:"vpcattachment"`
 	Namespace     string `json:"namespace"`
-	// Egress asks for an egress route out of this VPC's VRF. It is omitted
-	// whenever no egress is bound, which is what keeps every conflist rendered
-	// until now byte-identical — the same property DAN was given. A node that
-	// receives no block installs no route, so a network reaches nothing
-	// outside the platform until a consumer asks for it.
+	// Egress is what this attachment reaches outside the platform. It is omitted
+	// whenever egress is not enabled, which is what keeps every conflist rendered
+	// until now byte-identical, the same property DAN was given. A node that
+	// receives no block installs no route, so a network reaches nothing outside
+	// the platform until a consumer asks for it.
 	Egress *Egress `json:"egress,omitempty"`
 }
 
-// Egress is the outbound path this VPC takes out of the platform.
+// Egress is the outbound declaration this attachment carries to its node. It
+// names no shard: translation runs on the node the instance attaches to, so
+// the node routes toward its own shard and reads only whether to.
 type Egress struct {
-	// ShardSIDs are the SRv6 uSIDs of the egress translation shards that may
-	// serve this VPC, in preference order. It is a candidate list rather than
-	// one SID because a shard's reachability is a fact only the node knows:
-	// the node keeps the first entry it can resolve a route toward.
-	ShardSIDs []string `json:"shardSIDs,omitempty"`
+	Internet *InternetEgress `json:"internet,omitempty"`
+}
+
+// InternetEgressEnabled is the one mode a node acts on. Anything else, and an
+// absent block, installs no route.
+const InternetEgressEnabled = "Enabled"
+
+// InternetEgress is whether this attachment reaches the internet.
+type InternetEgress struct {
+	Mode string `json:"mode"`
 }
 
 // IPAM is the delegated IPAM block. Presence alone decides whether IPAM runs.
@@ -148,10 +155,10 @@ func Conflist(name, plugin, vpc, vpcAttachment string, mtu int32, addresses []Ad
 	if len(addresses) > 0 {
 		master.IPAM = &IPAM{Type: PluginIPAM, Addresses: addresses}
 	}
-	// An egress block holding no candidate is one a node can do nothing with,
+	// A block that does not declare Enabled is one a node can do nothing with,
 	// and it is not the same instruction as no block: absence is what tells the
 	// node to install no route.
-	if egress != nil && len(egress.ShardSIDs) == 0 {
+	if egress != nil && (egress.Internet == nil || egress.Internet.Mode != InternetEgressEnabled) {
 		egress = nil
 	}
 	return NetConfList{
