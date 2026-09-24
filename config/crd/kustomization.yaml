@@ -3,15 +3,9 @@ kind: Kustomization
 resources:
   - cloud.datumapis.com_vpcs.yaml
   - cloud.datumapis.com_vpcattachments.yaml
+  - cloud.datumapis.com_egressshardclaims.yaml
   # Written centrally, federated to the cells that need it, so it is installed
   # both places.
   - cloud.datumapis.com_networkfabricidentities.yaml
   # Cell-local: an operator writes one per InternetEgressClass this cell serves,
   # and only the controller in the cell reads it.
-  - cloud.datumapis.com_egressshardparameters.yaml
-  # Cell-local too: an operator declares the shards the cell has, and the
-  # builder in the cell expands it into the shard objects a class selects.
-  - cloud.datumapis.com_egressshardpools.yaml
-  # Cell-local as well: one per network context that declares egress, written
-  # and read only by the binder in the cell.
-  - cloud.datumapis.com_egressshardclaims.yaml

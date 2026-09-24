@@ -207,16 +207,16 @@ func TestConflistWithoutEgressIsByteIdentical(t *testing.T) {
 }
 
 // The egress block is the whole contract with the node: it hangs off the
-// galactic-bgp stanza, under one key, holding an ordered candidate list the
-// node selects the first resolvable entry from.
-func TestConflistCarriesTheEgressShardCandidates(t *testing.T) {
+// galactic-bgp stanza, under one key, and carries the declaration alone. The
+// node routes toward its own shard, so no shard identity travels here.
+func TestConflistCarriesTheEgressDeclaration(t *testing.T) {
 	const want = `{"cniVersion":"1.0.0","name":"vm-eth0","plugins":[` +
 		`{"type":"galactic-tap","vpc":"0000000jU","vpcattachment":"01a","namespace":"galactic-system"},` +
 		`{"type":"galactic-bgp","vpc":"0000000jU","vpcattachment":"01a","namespace":"galactic-system",` +
-		`"egress":{"shardSIDs":["2001:db8:ff01::","2001:db8:ff02::"]}}]}`
+		`"egress":{"internet":{"mode":"Enabled"}}}]}`
 
 	got, err := ConflistJSON("vm-eth0", PluginTap, "0000000jU", "01a", 0, nil, false,
-		&Egress{ShardSIDs: []string{"2001:db8:ff01::", "2001:db8:ff02::"}})
+		&Egress{Internet: &InternetEgress{Mode: InternetEgressEnabled}})
 	if err != nil {
 		t.Fatalf("ConflistJSON: %v", err)
 	}
@@ -225,15 +225,23 @@ func TestConflistCarriesTheEgressShardCandidates(t *testing.T) {
 	}
 }
 
-// An empty candidate list is an egress block a node can do nothing with, so it
-// renders as no block at all rather than as an empty one.
-func TestConflistOmitsAnEmptyShardCandidateList(t *testing.T) {
-	raw, err := ConflistJSON("vm-eth0", PluginTap, "0000000jU", "01a", 0, nil, false, &Egress{})
-	if err != nil {
-		t.Fatalf("ConflistJSON: %v", err)
-	}
-	if _, present := bgpStanza(t, raw)["egress"]; present {
-		t.Errorf("egress block present with no candidates: %s", raw)
+// A block that declares anything but Enabled is one a node can do nothing
+// with, so it renders as no block at all rather than as an empty one.
+func TestConflistOmitsAnEgressBlockThatDeclaresNothing(t *testing.T) {
+	for name, egress := range map[string]*Egress{
+		"empty":    {},
+		"no mode":  {Internet: &InternetEgress{}},
+		"disabled": {Internet: &InternetEgress{Mode: "Disabled"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			raw, err := ConflistJSON("vm-eth0", PluginTap, "0000000jU", "01a", 0, nil, false, egress)
+			if err != nil {
+				t.Fatalf("ConflistJSON: %v", err)
+			}
+			if _, present := bgpStanza(t, raw)["egress"]; present {
+				t.Errorf("egress block present with nothing enabled: %s", raw)
+			}
+		})
 	}
 }
 
