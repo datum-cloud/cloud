@@ -29,6 +29,67 @@ _Appears in:_
 
 
 
+#### InternetEgressAddressFamily
+
+_Underlying type:_ _string_
+
+InternetEgressAddressFamily is the address family of an egress source
+address.
+
+Only IPv6 is reported. Reaching an IPv4 destination needs a resolver and a
+translator sharing a prefix, which the platform pairs neither of, so the
+value is withheld rather than reported and not delivered. An address written
+today records IPv6, so accepting IPv4 later changes no attachment.
+
+_Validation:_
+- Enum: [IPv6]
+
+_Appears in:_
+- [InternetEgressSourceAddress](#internetegresssourceaddress)
+
+| Field | Description |
+| --- | --- |
+| `IPv6` |  |
+
+
+#### InternetEgressAddressStability
+
+_Underlying type:_ _string_
+
+InternetEgressAddressStability is how far a consumer may rely on an egress
+source address. It is the consumer-side projection of the serving class's
+sharing, derived here so a consumer never reads a class.
+
+_Validation:_
+- Enum: [None Network]
+
+_Appears in:_
+- [InternetEgressSourceAddress](#internetegresssourceaddress)
+
+| Field | Description |
+| --- | --- |
+| `None` | InternetEgressAddressStabilityNone means the address may change and<br />other networks share it. Allow-listing it admits traffic from other<br />networks and loses access when the address changes.<br /> |
+| `Network` | InternetEgressAddressStabilityNetwork means the address belongs to this<br />network and persists. Allow-listing it is safe.<br /> |
+
+
+#### InternetEgressSourceAddress
+
+
+
+InternetEgressSourceAddress is one address outbound traffic leaves on.
+
+
+
+_Appears in:_
+- [VPCAttachmentInternetEgressStatus](#vpcattachmentinternetegressstatus)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `family` _[InternetEgressAddressFamily](#internetegressaddressfamily)_ | Family is the address family of this source address. |  | Enum: [IPv6] <br /> |
+| `address` _string_ | Address is the source address translation writes, without a prefix<br />length. |  | MaxLength: 39 <br />MinLength: 1 <br /> |
+| `stability` _[InternetEgressAddressStability](#internetegressaddressstability)_ | Stability states how far a consumer may rely on this address before<br />they act on it. |  | Enum: [None Network] <br /> |
+
+
 #### Network
 
 _Underlying type:_ _string_
@@ -172,6 +233,23 @@ VPCAttachment is the Schema for the vpcattachments API
 | `status` _[VPCAttachmentStatus](#vpcattachmentstatus)_ | status defines the observed state of VPCAttachment |  |  |
 
 
+#### VPCAttachmentEgressStatus
+
+
+
+VPCAttachmentEgressStatus reports what this attachment reaches outside the
+platform.
+
+
+
+_Appears in:_
+- [VPCAttachmentStatus](#vpcattachmentstatus)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `internet` _[VPCAttachmentInternetEgressStatus](#vpcattachmentinternetegressstatus)_ | Internet is the internet egress realized for this attachment. |  |  |
+
+
 #### VPCAttachmentInterface
 
 
@@ -209,6 +287,23 @@ _Appears in:_
 | `Netns` | VPCAttachmentInterfaceModeNetns moves the interface into the workload's<br />network namespace, which is what a container consumes.<br /> |
 | `Hypervisor` | VPCAttachmentInterfaceModeHypervisor hands the interface to a hypervisor as<br />a device, which is what a virtual machine guest consumes.<br /> |
 | `HypervisorDeclared` | VPCAttachmentInterfaceModeHypervisorDeclared also hands the interface to a<br />hypervisor as a device. It differs from Hypervisor in who tells the<br />hypervisor that the device exists. Under Hypervisor the hypervisor finds<br />the device from what the node publishes. Under HypervisorDeclared the data<br />plane states the device, its addresses, and its MTU to the hypervisor<br />directly, which is what a guest whose hypervisor reads no node state<br />needs.<br /> |
+
+
+#### VPCAttachmentInternetEgressStatus
+
+
+
+VPCAttachmentInternetEgressStatus reports the outbound path this attachment
+leaves the platform on.
+
+
+
+_Appears in:_
+- [VPCAttachmentEgressStatus](#vpcattachmentegressstatus)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `sourceAddresses` _[InternetEgressSourceAddress](#internetegresssourceaddress) array_ | SourceAddresses are the addresses translation writes for this<br />attachment, one per family reached.<br />Absent means this attachment reaches nothing outside the platform, or<br />that no address has been reported for a path that does. An absent list<br />is never a placeholder: a consumer that allow-listed a guessed address<br />would admit the wrong traffic and believe otherwise. |  | MaxItems: 2 <br /> |
 
 
 #### VPCAttachmentSpec
@@ -257,6 +352,7 @@ _Appears in:_
 | `guestInterface` _string_ | Guest-side veth device name (e.g., "G000000010013G"). |  | MinLength: 1 <br /> |
 | `podSubnet` _string_ | Allocated subnet in CIDR notation (e.g., "fd00:10:ff01:0:1::/80"). |  | MinLength: 1 <br /> |
 | `networkAttachmentDefinition` _string_ | NetworkAttachmentDefinition rendered for this attachment. |  | MinLength: 1 <br /> |
+| `egress` _[VPCAttachmentEgressStatus](#vpcattachmentegressstatus)_ | Egress reports what this attachment reaches outside the platform.<br />It is reported per attachment rather than on the network, because the<br />interface is what a workload holds and what a consumer reads back<br />through. This controller is the only component that resolved which shard<br />the network bound to, so it is the only one that can report the answer. |  |  |
 
 
 #### VPCRef

@@ -71,6 +71,7 @@ rules:
   resources:
   - bgpadvertisements
   - bgprouters
+  - egressshards
   verbs:
   - get
   - list
