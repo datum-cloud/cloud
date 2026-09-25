@@ -14,11 +14,13 @@ COPY internal/ internal/
 
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -ldflags "-s -w" -o vpc-controller cmd/main.go
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -ldflags "-s -w" -o fabric-identity-controller cmd/fabric-identity-controller/main.go
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -ldflags "-s -w" -o egress-address-controller cmd/egress-address-controller/main.go
 
 FROM gcr.io/distroless/static-debian12:nonroot
 WORKDIR /
 COPY --from=builder /workspace/vpc-controller .
 COPY --from=builder /workspace/fabric-identity-controller .
+COPY --from=builder /workspace/egress-address-controller .
 USER 65532:65532
 
 ENTRYPOINT ["/vpc-controller"]
