@@ -85,15 +85,49 @@ func TestMergeNetworks(t *testing.T) {
 		want     string
 	}{
 		{"empty", "", []string{"ns/a"}, "ns/a"},
+		{"nothing to add", "", nil, ""},
 		{"appends in order", "", []string{"ns/a", "ns/b"}, "ns/a,ns/b"},
 		{"preserves what the pod asked for", "ns/other", []string{"ns/a"}, "ns/other,ns/a"},
 		{"does not duplicate", "ns/a", []string{"ns/a"}, "ns/a"},
 		{"tolerates whitespace", " ns/other , ", []string{"ns/a"}, "ns/other,ns/a"},
+		{"drops the default network", "ns/default,ns/other", []string{"ns/a"}, "ns/other,ns/a"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := mergeNetworks(test.existing, test.networks); got != test.want {
+			if got := mergeNetworks(test.existing, test.networks, "ns/default"); got != test.want {
 				t.Errorf("got %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestInjectNetworks(t *testing.T) {
+	tests := []struct {
+		name        string
+		existing    map[string]string
+		networks    []string
+		wantDefault string
+		wantList    string
+		wantListSet bool
+	}{
+		{"single interface is only the default", map[string]string{},
+			[]string{"ns/a"}, "ns/a", "", false},
+		{"additional interfaces exclude the default", map[string]string{},
+			[]string{"ns/a", "ns/b", "ns/c"}, "ns/a", "ns/b,ns/c", true},
+		{"preserves what the pod asked for", map[string]string{MultusNetworksAnnotation: "ns/other"},
+			[]string{"ns/a"}, "ns/a", "ns/other", true},
+		{"drops a default the pod already listed", map[string]string{MultusNetworksAnnotation: "ns/a"},
+			[]string{"ns/a", "ns/b"}, "ns/a", "ns/b", true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			injectNetworks(test.existing, test.networks)
+			if got := test.existing[MultusDefaultNetworkAnnotation]; got != test.wantDefault {
+				t.Errorf("default network: got %q, want %q", got, test.wantDefault)
+			}
+			got, set := test.existing[MultusNetworksAnnotation]
+			if got != test.wantList || set != test.wantListSet {
+				t.Errorf("networks: got (%q, %v), want (%q, %v)", got, set, test.wantList, test.wantListSet)
 			}
 		})
 	}
