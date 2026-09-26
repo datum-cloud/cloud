@@ -50,6 +50,7 @@ _Appears in:_
 | Field | Description |
 | --- | --- |
 | `IPv6` |  |
+| `IPv4` |  |
 
 
 #### InternetEgressAddressStability

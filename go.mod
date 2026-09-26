@@ -79,6 +79,6 @@ require (
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
 
-replace go.datum.net/network => github.com/datum-cloud/network v0.1.1-0.20260923215140-1ed44c853eea
+replace go.datum.net/network => github.com/datum-cloud/network v0.1.1-0.20260926162437-e92beadac630
 
 replace go.datum.net/network-services-operator => github.com/datum-cloud/network-services-operator v0.27.2-0.20260924225138-f78ee4cb7f7f

@@ -71,10 +71,39 @@ rules:
   resources:
   - bgpadvertisements
   - bgprouters
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - network.datumapis.com
+  resources:
+  - egressshardclaims
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - network.datumapis.com
+  resources:
+  - egressshardclaims/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - network.datumapis.com
+  resources:
   - egressshards
   verbs:
   - get
   - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - networking.datumapis.com
