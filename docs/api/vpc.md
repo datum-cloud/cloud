@@ -9,116 +9,10 @@
 Package v1alpha1 contains API Schema definitions for the cloud.datumapis.com/v1alpha1 API group.
 
 ### Resource Types
-- [EgressShardClaim](#egressshardclaim)
 - [NetworkFabricIdentity](#networkfabricidentity)
 - [VPC](#vpc)
 - [VPCAttachment](#vpcattachment)
 
-
-
-#### AttachmentRef
-
-
-
-AttachmentRef references a VPCAttachment by name.
-
-
-
-_Appears in:_
-- [EgressShardClaimSpec](#egressshardclaimspec)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `name` _string_ | Name of the VPCAttachment. |  | MinLength: 1 <br /> |
-
-
-#### EgressShardClaim
-
-
-
-EgressShardClaim records one attachment's egress shard: the shard on the
-node the attachment landed on.
-
-There is one claim per attachment, owned by it, so an attachment that goes
-takes its record with it. The claim names no selector, no address and no
-pool: the node is the binding, and the claim writes it down.
-
-
-
-
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `apiVersion` _string_ | `cloud.datumapis.com/v1alpha1` | | |
-| `kind` _string_ | `EgressShardClaim` | | |
-| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  |  |
-| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  |  |
-| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
-| `spec` _[EgressShardClaimSpec](#egressshardclaimspec)_ |  |  |  |
-| `status` _[EgressShardClaimStatus](#egressshardclaimstatus)_ |  |  |  |
-
-
-#### EgressShardClaimSpec
-
-
-
-EgressShardClaimSpec is one attachment being recorded against the egress
-shard on its node.
-
-The claim decides nothing. The node already routes toward its own shard from
-the moment the attachment exists; the claim records which shard that is, so
-the binding is readable, so a node without a usable shard produces a
-condition a consumer can see, and so a later tier that does select among
-shards binds through the same object.
-
-The whole spec is immutable. An attachment that lands on a different node is
-a different record, so the claim is replaced rather than edited.
-
-
-
-_Appears in:_
-- [EgressShardClaim](#egressshardclaim)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `attachment` _[AttachmentRef](#attachmentref)_ | Attachment is the attachment this claim records egress for. The claim<br />carries the attachment's name and namespace, so the two are read by one<br />key. |  |  |
-| `nodeName` _string_ | NodeName is the node the attachment landed on, and therefore the node<br />whose shard serves it. |  | MinLength: 1 <br /> |
-| `families` _[InternetEgressAddressFamily](#internetegressaddressfamily) array_ | Families are the destination address families the network declared,<br />so the shard on the node is one that translates them. |  | Enum: [IPv6] <br />MaxItems: 2 <br />MinItems: 1 <br /> |
-
-
-#### EgressShardClaimStatus
-
-
-
-EgressShardClaimStatus is the shard an attachment was recorded against.
-
-
-
-_Appears in:_
-- [EgressShardClaim](#egressshardclaim)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `observedGeneration` _integer_ |  |  |  |
-| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v/#condition-v1-meta) array_ |  |  |  |
-| `shardRef` _[EgressShardReference](#egressshardreference)_ | ShardRef is the shard on the attachment's node.<br />Absent means the node holds no shard this claim can record, which is<br />what an attachment on a node an operator has not commissioned reads. |  |  |
-
-
-#### EgressShardReference
-
-
-
-EgressShardReference names the shard an attachment egresses through.
-
-
-
-_Appears in:_
-- [EgressShardClaimStatus](#egressshardclaimstatus)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `namespace` _string_ | Namespace of the EgressShard. |  | MinLength: 1 <br /> |
-| `name` _string_ | Name of the EgressShard. |  | MinLength: 1 <br /> |
 
 
 #### IPAddress
@@ -151,7 +45,6 @@ _Validation:_
 - Enum: [IPv6]
 
 _Appears in:_
-- [EgressShardClaimSpec](#egressshardclaimspec)
 - [InternetEgressSourceAddress](#internetegresssourceaddress)
 
 | Field | Description |

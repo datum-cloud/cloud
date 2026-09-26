@@ -74,8 +74,8 @@ type EgressShardClaimReconciler struct {
 // +kubebuilder:rbac:groups=cloud.datumapis.com,resources=vpcattachments,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cloud.datumapis.com,resources=vpcattachments/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=networkcontexts,verbs=get;list;watch
-// +kubebuilder:rbac:groups=cloud.datumapis.com,resources=egressshardclaims,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=cloud.datumapis.com,resources=egressshardclaims/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=network.datumapis.com,resources=egressshardclaims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=network.datumapis.com,resources=egressshardclaims/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=network.datumapis.com,resources=egressshards,verbs=get;list;watch;update;patch
 
 func (r *EgressShardClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -89,7 +89,7 @@ func (r *EgressShardClaimReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		attachmentFound = false
 	}
 
-	var claim cloudv1alpha1.EgressShardClaim
+	var claim bgpv1alpha1.EgressShardClaim
 	claimFound := true
 	if err := r.Get(ctx, req.NamespacedName, &claim); err != nil {
 		if !apierrors.IsNotFound(err) {
@@ -152,7 +152,7 @@ func (r *EgressShardClaimReconciler) Reconcile(ctx context.Context, req ctrl.Req
 // or nil when there is nothing to record yet.
 func (r *EgressShardClaimReconciler) claimTerms(
 	ctx context.Context, attachment *cloudv1alpha1.VPCAttachment,
-) (*cloudv1alpha1.EgressShardClaimSpec, error) {
+) (*bgpv1alpha1.EgressShardClaimSpec, error) {
 	if attachment.Status.Node == "" {
 		return nil, nil
 	}
@@ -174,8 +174,9 @@ func (r *EgressShardClaimReconciler) claimTerms(
 	if err != nil {
 		return nil, err
 	}
-	return &cloudv1alpha1.EgressShardClaimSpec{
-		Attachment: cloudv1alpha1.AttachmentRef{Name: attachment.Name},
+	return &bgpv1alpha1.EgressShardClaimSpec{
+		Attachment: bgpv1alpha1.EgressShardClaimAttachmentRef{Name: attachment.Name},
+		VPC:        bgpv1alpha1.EgressShardClaimVPCRef{Name: attachment.Spec.VPC.Name},
 		NodeName:   attachment.Status.Node,
 		Families:   families,
 	}, nil
@@ -191,14 +192,14 @@ func (r *EgressShardClaimReconciler) claimTerms(
 // consumer does not have.
 func claimFamilies(
 	reach []networkingv1alpha.IPFamily,
-) ([]cloudv1alpha1.InternetEgressAddressFamily, error) {
+) ([]bgpv1alpha1.EgressAddressFamily, error) {
 	if len(reach) == 0 {
 		return nil, &bindingRefusedError{
 			reason:  networkingv1alpha.NetworkContextInternetEgressReasonUnavailable,
 			message: "The network declares no address family to reach, so no shard can serve it",
 		}
 	}
-	families := make([]cloudv1alpha1.InternetEgressAddressFamily, 0, len(reach))
+	families := make([]bgpv1alpha1.EgressAddressFamily, 0, len(reach))
 	for _, family := range reach {
 		if family != networkingv1alpha.IPv6Protocol {
 			return nil, &bindingRefusedError{
@@ -207,7 +208,7 @@ func claimFamilies(
 					family),
 			}
 		}
-		families = append(families, cloudv1alpha1.InternetEgressAddressFamilyIPv6)
+		families = append(families, bgpv1alpha1.EgressAddressFamilyIPv6)
 	}
 	return families, nil
 }
@@ -218,12 +219,13 @@ func claimFamilies(
 func (r *EgressShardClaimReconciler) createClaim(
 	ctx context.Context,
 	attachment *cloudv1alpha1.VPCAttachment,
-	terms *cloudv1alpha1.EgressShardClaimSpec,
+	terms *bgpv1alpha1.EgressShardClaimSpec,
 ) error {
-	claim := &cloudv1alpha1.EgressShardClaim{
+	claim := &bgpv1alpha1.EgressShardClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: attachment.Namespace,
 			Name:      attachment.Name,
+			Labels:    map[string]string{bgpv1alpha1.LabelEgressShardClaimNode: terms.NodeName},
 		},
 		Spec: *terms,
 	}
@@ -245,7 +247,7 @@ func (r *EgressShardClaimReconciler) createClaim(
 // to record. Deleting it is what releases the shard: the consumer set is a
 // list of claims.
 func (r *EgressShardClaimReconciler) releaseClaim(
-	ctx context.Context, claim *cloudv1alpha1.EgressShardClaim, claimFound bool, why string,
+	ctx context.Context, claim *bgpv1alpha1.EgressShardClaim, claimFound bool, why string,
 ) error {
 	if !claimFound {
 		return nil
@@ -263,7 +265,7 @@ func (r *EgressShardClaimReconciler) releaseClaim(
 func (r *EgressShardClaimReconciler) bind(
 	ctx context.Context,
 	attachment *cloudv1alpha1.VPCAttachment,
-	claim *cloudv1alpha1.EgressShardClaim,
+	claim *bgpv1alpha1.EgressShardClaim,
 ) error {
 	shard, err := egressShardOnNode(ctx, r.Client, claim.Spec.NodeName)
 	if err != nil {
@@ -271,7 +273,7 @@ func (r *EgressShardClaimReconciler) bind(
 	}
 	if shard == nil {
 		return r.refuse(ctx, attachment, claim, &bindingRefusedError{
-			reason: cloudv1alpha1.EgressShardClaimReasonNoShardOnNode,
+			reason: bgpv1alpha1.EgressShardClaimReasonNoShardOnNode,
 			message: fmt.Sprintf("No egress shard names node %q, so nothing on it translates this attachment's traffic",
 				claim.Spec.NodeName),
 		})
@@ -284,18 +286,18 @@ func (r *EgressShardClaimReconciler) bind(
 
 // shardRefusal is why a shard may not be recorded, or nil if it may be.
 func shardRefusal(
-	shard *bgpv1alpha1.EgressShard, families []cloudv1alpha1.InternetEgressAddressFamily,
+	shard *bgpv1alpha1.EgressShard, families []bgpv1alpha1.EgressAddressFamily,
 ) *bindingRefusedError {
 	if !shard.DeletionTimestamp.IsZero() {
 		return &bindingRefusedError{
-			reason: cloudv1alpha1.EgressShardClaimReasonShardTerminating,
+			reason: bgpv1alpha1.EgressShardClaimReasonShardTerminating,
 			message: fmt.Sprintf("Egress shard %q is being deleted, so it takes no further attachment",
 				shard.Name),
 		}
 	}
 	if shard.Status.ShardSID == "" {
 		return &bindingRefusedError{
-			reason: cloudv1alpha1.EgressShardClaimReasonShardNotReady,
+			reason: bgpv1alpha1.EgressShardClaimReasonShardNotReady,
 			message: fmt.Sprintf("Egress shard %q has reported no identifier a node can route toward",
 				shard.Name),
 		}
@@ -304,15 +306,15 @@ func shardRefusal(
 		(shard.Spec.ShardAddressIPv6 != "" && shard.Status.ShardAddressIPv6 != "" &&
 			shard.Spec.ShardAddressIPv6 != shard.Status.ShardAddressIPv6) {
 		return &bindingRefusedError{
-			reason: cloudv1alpha1.EgressShardClaimReasonShardMismatch,
+			reason: bgpv1alpha1.EgressShardClaimReasonShardMismatch,
 			message: fmt.Sprintf("Egress shard %q runs an identity other than the one its spec states, so which one serves this node is unknown",
 				shard.Name),
 		}
 	}
-	if slices.Contains(families, cloudv1alpha1.InternetEgressAddressFamilyIPv4) &&
+	if slices.Contains(families, bgpv1alpha1.EgressAddressFamilyIPv4) &&
 		shard.Status.ShardAddressIPv4 == "" {
 		return &bindingRefusedError{
-			reason: cloudv1alpha1.EgressShardClaimReasonFamilyUnsupported,
+			reason: bgpv1alpha1.EgressShardClaimReasonFamilyUnsupported,
 			message: fmt.Sprintf("Egress shard %q translates no IPv4 flow, which the network declares it reaches",
 				shard.Name),
 		}
@@ -327,7 +329,7 @@ func shardRefusal(
 func (r *EgressShardClaimReconciler) recordBinding(
 	ctx context.Context,
 	attachment *cloudv1alpha1.VPCAttachment,
-	claim *cloudv1alpha1.EgressShardClaim,
+	claim *bgpv1alpha1.EgressShardClaim,
 	shard *bgpv1alpha1.EgressShard,
 ) error {
 	if err := holdShard(ctx, r.Client, shard); err != nil {
@@ -337,7 +339,7 @@ func (r *EgressShardClaimReconciler) recordBinding(
 		return err
 	}
 
-	claim.Status.ShardRef = &cloudv1alpha1.EgressShardReference{
+	claim.Status.ShardRef = &bgpv1alpha1.EgressShardClaimShardRef{
 		Namespace: shard.Namespace,
 		Name:      shard.Name,
 	}
@@ -346,7 +348,7 @@ func (r *EgressShardClaimReconciler) recordBinding(
 		"shard", client.ObjectKeyFromObject(shard))
 
 	if err := r.publishClaimStatus(ctx, claim, metav1.ConditionTrue,
-		cloudv1alpha1.EgressShardClaimReasonBound,
+		bgpv1alpha1.EgressShardClaimReasonBound,
 		fmt.Sprintf("Attachment %q egresses through egress shard %q", claim.Spec.Attachment.Name, shard.Name)); err != nil {
 		return err
 	}
@@ -358,16 +360,16 @@ func (r *EgressShardClaimReconciler) recordBinding(
 // label lost to an edit would hide an attachment from the query that holds a
 // shard open.
 func (r *EgressShardClaimReconciler) labelClaim(
-	ctx context.Context, claim *cloudv1alpha1.EgressShardClaim, shardName string,
+	ctx context.Context, claim *bgpv1alpha1.EgressShardClaim, shardName string,
 ) error {
-	if claim.Labels[cloudv1alpha1.LabelEgressShardClaimShard] == shardName {
+	if claim.Labels[bgpv1alpha1.LabelEgressShardClaimShard] == shardName {
 		return nil
 	}
 	patch := client.MergeFrom(claim.DeepCopy())
 	if claim.Labels == nil {
 		claim.Labels = map[string]string{}
 	}
-	claim.Labels[cloudv1alpha1.LabelEgressShardClaimShard] = shardName
+	claim.Labels[bgpv1alpha1.LabelEgressShardClaimShard] = shardName
 	if err := r.Patch(ctx, claim, patch); err != nil {
 		return fmt.Errorf("label EgressShardClaim %s with its shard: %w",
 			client.ObjectKeyFromObject(claim), err)
@@ -381,7 +383,7 @@ func (r *EgressShardClaimReconciler) labelClaim(
 func (r *EgressShardClaimReconciler) reportExistingBinding(
 	ctx context.Context,
 	attachment *cloudv1alpha1.VPCAttachment,
-	claim *cloudv1alpha1.EgressShardClaim,
+	claim *bgpv1alpha1.EgressShardClaim,
 ) error {
 	if err := r.labelClaim(ctx, claim, claim.Status.ShardRef.Name); err != nil {
 		return err
@@ -398,7 +400,7 @@ func (r *EgressShardClaimReconciler) reportExistingBinding(
 		}
 		message := fmt.Sprintf("Egress shard %q no longer exists", key.Name)
 		if err := r.publishClaimStatus(ctx, claim, metav1.ConditionFalse,
-			cloudv1alpha1.EgressShardClaimReasonShardMissing, message); err != nil {
+			bgpv1alpha1.EgressShardClaimReasonShardMissing, message); err != nil {
 			return err
 		}
 		return r.reportAttachment(ctx, attachment, metav1.ConditionFalse,
@@ -434,7 +436,7 @@ func (r *EgressShardClaimReconciler) reportBinding(
 func (r *EgressShardClaimReconciler) refuse(
 	ctx context.Context,
 	attachment *cloudv1alpha1.VPCAttachment,
-	claim *cloudv1alpha1.EgressShardClaim,
+	claim *bgpv1alpha1.EgressShardClaim,
 	refusal *bindingRefusedError,
 ) error {
 	if err := r.publishClaimStatus(ctx, claim, metav1.ConditionFalse,
@@ -449,7 +451,7 @@ func (r *EgressShardClaimReconciler) refuse(
 
 func (r *EgressShardClaimReconciler) publishClaimStatus(
 	ctx context.Context,
-	claim *cloudv1alpha1.EgressShardClaim,
+	claim *bgpv1alpha1.EgressShardClaim,
 	status metav1.ConditionStatus,
 	reason, message string,
 ) error {
@@ -501,11 +503,11 @@ func (r *EgressShardClaimReconciler) reportAttachment(
 // SetupWithManager registers the reconciler with the manager.
 func (r *EgressShardClaimReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&cloudv1alpha1.EgressShardClaim{},
+		For(&bgpv1alpha1.EgressShardClaim{},
 			builder.WithPredicates(predicate.NewPredicateFuncs(func(object client.Object) bool {
 				// A bound claim is never reconsidered on its own events. It is
 				// re-read when its attachment or its shard changes.
-				claim, ok := object.(*cloudv1alpha1.EgressShardClaim)
+				claim, ok := object.(*bgpv1alpha1.EgressShardClaim)
 				return ok && claim.Status.ShardRef == nil
 			}))).
 		Watches(&cloudv1alpha1.VPCAttachment{},
@@ -555,7 +557,7 @@ func (r *EgressShardClaimReconciler) claimsForEgressShard(
 	if !ok {
 		return nil
 	}
-	var claims cloudv1alpha1.EgressShardClaimList
+	var claims bgpv1alpha1.EgressShardClaimList
 	if err := r.List(ctx, &claims); err != nil {
 		return nil
 	}

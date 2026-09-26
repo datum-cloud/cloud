@@ -63,7 +63,7 @@ func heldOpen(t *testing.T, cl client.Client) bool {
 	if err := cl.Get(t.Context(), key, &shard); err != nil {
 		t.Fatalf("get the shard: %v", err)
 	}
-	return controllerutil.ContainsFinalizer(&shard, cloudv1alpha1.FinalizerEgressShardBinding)
+	return controllerutil.ContainsFinalizer(&shard, finalizerEgressShardBinding)
 }
 
 // The finalizer is the only state a binder adds to a shard, and it holds while
@@ -84,7 +84,7 @@ func TestShardIsHeldOpenWhileANetworkIsBound(t *testing.T) {
 // node it runs on.
 func TestShardIsReleasedWhenNoNetworkIsBound(t *testing.T) {
 	shard := newEgressShard("shard-a", egressTestNode, "2001:db8:ff01::", "2001:db8:f00d::100")
-	shard.Finalizers = []string{cloudv1alpha1.FinalizerEgressShardBinding}
+	shard.Finalizers = []string{finalizerEgressShardBinding}
 	r, cl := newShardBinder(t, shard)
 
 	reconcileShard(t, r)
@@ -100,7 +100,7 @@ func TestShardIsReleasedWhenAClaimHoldsOnlyTheLabel(t *testing.T) {
 	claim := newEgressClaim("shard-a")
 	claim.Status.ShardRef = nil
 	shard := newEgressShard("shard-a", egressTestNode, "2001:db8:ff01::", "2001:db8:f00d::100")
-	shard.Finalizers = []string{cloudv1alpha1.FinalizerEgressShardBinding}
+	shard.Finalizers = []string{finalizerEgressShardBinding}
 	r, cl := newShardBinder(t, claim, shard)
 
 	reconcileShard(t, r)
@@ -116,7 +116,7 @@ func TestShardIgnoresAClaimBoundElsewhere(t *testing.T) {
 	claim := newEgressClaim("shard-a")
 	claim.Status.ShardRef.Namespace = "some-other-namespace"
 	shard := newEgressShard("shard-a", egressTestNode, "2001:db8:ff01::", "2001:db8:f00d::100")
-	shard.Finalizers = []string{cloudv1alpha1.FinalizerEgressShardBinding}
+	shard.Finalizers = []string{finalizerEgressShardBinding}
 	r, cl := newShardBinder(t, claim, shard)
 
 	reconcileShard(t, r)

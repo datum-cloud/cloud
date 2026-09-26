@@ -52,7 +52,7 @@ func newBinder(t *testing.T, objects ...client.Object) (*EgressShardClaimReconci
 	}
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).
-		WithStatusSubresource(&cloudv1alpha1.EgressShardClaim{}, &cloudv1alpha1.VPCAttachment{}).
+		WithStatusSubresource(&bgpv1alpha1.EgressShardClaim{}, &cloudv1alpha1.VPCAttachment{}).
 		Build()
 	return &EgressShardClaimReconciler{Client: fakeClient, Scheme: scheme}, fakeClient
 }
@@ -71,18 +71,19 @@ func newLandedAttachment(node string) *cloudv1alpha1.VPCAttachment {
 
 // newEgressClaim is a record already written for the test attachment, bound
 // to shardName or, with an empty name, still unbound.
-func newEgressClaim(shardName string) *cloudv1alpha1.EgressShardClaim {
-	claim := &cloudv1alpha1.EgressShardClaim{}
+func newEgressClaim(shardName string) *bgpv1alpha1.EgressShardClaim {
+	claim := &bgpv1alpha1.EgressShardClaim{}
 	claim.Namespace = egressTestNamespace
 	claim.Name = egressAttachmentName
-	claim.Spec = cloudv1alpha1.EgressShardClaimSpec{
-		Attachment: cloudv1alpha1.AttachmentRef{Name: egressAttachmentName},
+	claim.Spec = bgpv1alpha1.EgressShardClaimSpec{
+		Attachment: bgpv1alpha1.EgressShardClaimAttachmentRef{Name: egressAttachmentName},
+		VPC:        bgpv1alpha1.EgressShardClaimVPCRef{Name: "default-us-central-1"},
 		NodeName:   egressTestNode,
-		Families:   []cloudv1alpha1.InternetEgressAddressFamily{cloudv1alpha1.InternetEgressAddressFamilyIPv6},
+		Families:   []bgpv1alpha1.EgressAddressFamily{bgpv1alpha1.EgressAddressFamilyIPv6},
 	}
 	if shardName != "" {
-		claim.Labels = map[string]string{cloudv1alpha1.LabelEgressShardClaimShard: shardName}
-		claim.Status.ShardRef = &cloudv1alpha1.EgressShardReference{
+		claim.Labels = map[string]string{bgpv1alpha1.LabelEgressShardClaimShard: shardName}
+		claim.Status.ShardRef = &bgpv1alpha1.EgressShardClaimShardRef{
 			Namespace: egressShardNamespace,
 			Name:      shardName,
 		}
@@ -98,9 +99,9 @@ func reconcileBinding(t *testing.T, r *EgressShardClaimReconciler) {
 	}
 }
 
-func readClaim(t *testing.T, cl client.Client) *cloudv1alpha1.EgressShardClaim {
+func readClaim(t *testing.T, cl client.Client) *bgpv1alpha1.EgressShardClaim {
 	t.Helper()
-	var claim cloudv1alpha1.EgressShardClaim
+	var claim bgpv1alpha1.EgressShardClaim
 	key := client.ObjectKey{Namespace: egressTestNamespace, Name: egressAttachmentName}
 	if err := cl.Get(t.Context(), key, &claim); err != nil {
 		t.Fatalf("get the claim: %v", err)
@@ -110,7 +111,7 @@ func readClaim(t *testing.T, cl client.Client) *cloudv1alpha1.EgressShardClaim {
 
 func claimExists(t *testing.T, cl client.Client) bool {
 	t.Helper()
-	var claim cloudv1alpha1.EgressShardClaim
+	var claim bgpv1alpha1.EgressShardClaim
 	key := client.ObjectKey{Namespace: egressTestNamespace, Name: egressAttachmentName}
 	return cl.Get(t.Context(), key, &claim) == nil
 }
@@ -132,7 +133,7 @@ func TestBinderRecordsOncePerAttachment(t *testing.T) {
 		t.Errorf("node: got %q, want %q", claim.Spec.NodeName, egressTestNode)
 	}
 	if len(claim.Spec.Families) != 1 ||
-		claim.Spec.Families[0] != cloudv1alpha1.InternetEgressAddressFamilyIPv6 {
+		claim.Spec.Families[0] != bgpv1alpha1.EgressAddressFamilyIPv6 {
 		t.Errorf("families: got %v, want [IPv6]", claim.Spec.Families)
 	}
 	if claim.Status.ShardRef != nil {
@@ -178,10 +179,10 @@ func TestBinderRecordsTheShardOnTheNode(t *testing.T) {
 	if claim.Status.ShardRef.Namespace != egressShardNamespace {
 		t.Errorf("shard namespace: got %q, want %q", claim.Status.ShardRef.Namespace, egressShardNamespace)
 	}
-	if got := claim.Labels[cloudv1alpha1.LabelEgressShardClaimShard]; got != "worker-3-egress" {
+	if got := claim.Labels[bgpv1alpha1.LabelEgressShardClaimShard]; got != "worker-3-egress" {
 		t.Errorf("shard label: got %q, want worker-3-egress", got)
 	}
-	assertClaimCondition(t, cl, metav1.ConditionTrue, cloudv1alpha1.EgressShardClaimReasonBound)
+	assertClaimCondition(t, cl, metav1.ConditionTrue, bgpv1alpha1.EgressShardClaimReasonBound)
 	assertAttachmentCondition(t, cl, metav1.ConditionTrue,
 		networkingv1alpha.NetworkContextInternetEgressReasonReady)
 
@@ -192,7 +193,7 @@ func TestBinderRecordsTheShardOnTheNode(t *testing.T) {
 	if err := cl.Get(t.Context(), key, &shard); err != nil {
 		t.Fatalf("get the recorded shard: %v", err)
 	}
-	if !controllerutil.ContainsFinalizer(&shard, cloudv1alpha1.FinalizerEgressShardBinding) {
+	if !controllerutil.ContainsFinalizer(&shard, finalizerEgressShardBinding) {
 		t.Error("the recorded shard is not held open")
 	}
 	if shard.Spec.ShardAddressIPv6 != "2001:db8:f00d::100" {
@@ -213,24 +214,24 @@ func TestBinderWaitsForAShardItCanUse(t *testing.T) {
 	}{
 		{
 			name:   "no shard names the node",
-			reason: cloudv1alpha1.EgressShardClaimReasonNoShardOnNode,
+			reason: bgpv1alpha1.EgressShardClaimReasonNoShardOnNode,
 		},
 		{
 			name: "the shard reports no identifier",
 			objects: []client.Object{
 				newEgressShard("worker-3-egress", egressTestNode, "", "2001:db8:f00d::100")},
-			reason: cloudv1alpha1.EgressShardClaimReasonShardNotReady,
+			reason: bgpv1alpha1.EgressShardClaimReasonShardNotReady,
 		},
 		{
 			name:    "the shard runs an identity its spec does not state",
 			objects: []client.Object{mismatched},
-			reason:  cloudv1alpha1.EgressShardClaimReasonShardMismatch,
+			reason:  bgpv1alpha1.EgressShardClaimReasonShardMismatch,
 		},
 		{
 			name: "the shard is being deleted",
 			objects: []client.Object{terminatingShard(
 				newEgressShard("worker-3-egress", egressTestNode, "2001:db8:ff01::", "2001:db8:f00d::100"))},
-			reason: cloudv1alpha1.EgressShardClaimReasonShardTerminating,
+			reason: bgpv1alpha1.EgressShardClaimReasonShardTerminating,
 		},
 	}
 	for _, test := range tests {
@@ -267,7 +268,7 @@ func TestBinderReportsThatNoAddressIsAllocatedYet(t *testing.T) {
 	if readClaim(t, cl).Status.ShardRef == nil {
 		t.Fatal("a shard with an identifier and no address recorded nothing")
 	}
-	assertClaimCondition(t, cl, metav1.ConditionTrue, cloudv1alpha1.EgressShardClaimReasonBound)
+	assertClaimCondition(t, cl, metav1.ConditionTrue, bgpv1alpha1.EgressShardClaimReasonBound)
 	assertAttachmentCondition(t, cl, metav1.ConditionFalse,
 		networkingv1alpha.NetworkContextInternetEgressReasonAddressUnavailable)
 }
@@ -373,7 +374,7 @@ func TestBinderRepairsTheShardLabel(t *testing.T) {
 
 	reconcileBinding(t, r)
 
-	if got := readClaim(t, cl).Labels[cloudv1alpha1.LabelEgressShardClaimShard]; got != "worker-3-egress" {
+	if got := readClaim(t, cl).Labels[bgpv1alpha1.LabelEgressShardClaimShard]; got != "worker-3-egress" {
 		t.Errorf("shard label: got %q, want worker-3-egress", got)
 	}
 }
@@ -386,7 +387,7 @@ func TestBinderReportsAMissingShard(t *testing.T) {
 
 	reconcileBinding(t, r)
 
-	assertClaimCondition(t, cl, metav1.ConditionFalse, cloudv1alpha1.EgressShardClaimReasonShardMissing)
+	assertClaimCondition(t, cl, metav1.ConditionFalse, bgpv1alpha1.EgressShardClaimReasonShardMissing)
 	assertAttachmentCondition(t, cl, metav1.ConditionFalse,
 		networkingv1alpha.NetworkContextInternetEgressReasonUnavailable)
 }
@@ -411,7 +412,7 @@ func TestBinderNeverReportsDegraded(t *testing.T) {
 }
 
 func terminatingShard(shard *bgpv1alpha1.EgressShard) *bgpv1alpha1.EgressShard {
-	shard.Finalizers = []string{cloudv1alpha1.FinalizerEgressShardBinding}
+	shard.Finalizers = []string{finalizerEgressShardBinding}
 	deletion := metav1.Now()
 	shard.DeletionTimestamp = &deletion
 	return shard

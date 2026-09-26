@@ -29,7 +29,6 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	cloudv1alpha1 "go.datum.net/cloud/api/v1alpha1"
 	bgpv1alpha1 "go.datum.net/network/api/v1alpha1"
 )
 
@@ -52,7 +51,12 @@ type EgressShardBindingReconciler struct {
 }
 
 // +kubebuilder:rbac:groups=network.datumapis.com,resources=egressshards,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=cloud.datumapis.com,resources=egressshardclaims,verbs=get;list;watch
+// finalizerEgressShardBinding is held on a shard while any claim is bound to it,
+// so decommissioning a shard is an act someone takes rather than an outcome
+// instances discover.
+const finalizerEgressShardBinding = "cloud.datumapis.com/egress-shard-binding"
+
+// +kubebuilder:rbac:groups=network.datumapis.com,resources=egressshardclaims,verbs=get;list;watch
 
 func (r *EgressShardBindingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var shard bgpv1alpha1.EgressShard
@@ -80,7 +84,7 @@ func (r *EgressShardBindingReconciler) Reconcile(ctx context.Context, req ctrl.R
 // holdShard adds the binder's finalizer, so the shard cannot go while a network
 // is bound to it.
 func holdShard(ctx context.Context, cl client.Client, shard *bgpv1alpha1.EgressShard) error {
-	if controllerutil.ContainsFinalizer(shard, cloudv1alpha1.FinalizerEgressShardBinding) {
+	if controllerutil.ContainsFinalizer(shard, finalizerEgressShardBinding) {
 		return nil
 	}
 	// Patched rather than updated. The controller holding the addressing-service
@@ -88,7 +92,7 @@ func holdShard(ctx context.Context, cl client.Client, shard *bgpv1alpha1.EgressS
 	// copy read before that write would put the old value back over a field that
 	// is write-once.
 	patch := client.MergeFrom(shard.DeepCopy())
-	controllerutil.AddFinalizer(shard, cloudv1alpha1.FinalizerEgressShardBinding)
+	controllerutil.AddFinalizer(shard, finalizerEgressShardBinding)
 	if err := cl.Patch(ctx, shard, patch); err != nil {
 		return fmt.Errorf("hold egress shard %s open for the networks bound to it: %w",
 			client.ObjectKeyFromObject(shard), err)
@@ -99,11 +103,11 @@ func holdShard(ctx context.Context, cl client.Client, shard *bgpv1alpha1.EgressS
 // releaseShard removes the binder's finalizer from a shard no network is bound
 // to, which is what lets an operator decommission a drained node.
 func releaseShard(ctx context.Context, cl client.Client, shard *bgpv1alpha1.EgressShard) error {
-	if !controllerutil.ContainsFinalizer(shard, cloudv1alpha1.FinalizerEgressShardBinding) {
+	if !controllerutil.ContainsFinalizer(shard, finalizerEgressShardBinding) {
 		return nil
 	}
 	patch := client.MergeFrom(shard.DeepCopy())
-	controllerutil.RemoveFinalizer(shard, cloudv1alpha1.FinalizerEgressShardBinding)
+	controllerutil.RemoveFinalizer(shard, finalizerEgressShardBinding)
 	if err := cl.Patch(ctx, shard, patch); err != nil {
 		return fmt.Errorf("release egress shard %s: %w", client.ObjectKeyFromObject(shard), err)
 	}
@@ -120,15 +124,15 @@ func releaseShard(ctx context.Context, cl client.Client, shard *bgpv1alpha1.Egre
 // binding that never completed counts as nothing.
 func boundEgressShardClaims(
 	ctx context.Context, reader client.Reader, shard *bgpv1alpha1.EgressShard,
-) ([]cloudv1alpha1.EgressShardClaim, error) {
-	var claims cloudv1alpha1.EgressShardClaimList
+) ([]bgpv1alpha1.EgressShardClaim, error) {
+	var claims bgpv1alpha1.EgressShardClaimList
 	if err := reader.List(ctx, &claims, client.MatchingLabels{
-		cloudv1alpha1.LabelEgressShardClaimShard: shard.Name,
+		bgpv1alpha1.LabelEgressShardClaimShard: shard.Name,
 	}); err != nil {
 		return nil, fmt.Errorf("list the claims bound to egress shard %s: %w", shard.Name, err)
 	}
 
-	bound := make([]cloudv1alpha1.EgressShardClaim, 0, len(claims.Items))
+	bound := make([]bgpv1alpha1.EgressShardClaim, 0, len(claims.Items))
 	for i := range claims.Items {
 		claim := claims.Items[i]
 		held := claim.Status.ShardRef
@@ -147,7 +151,7 @@ func boundEgressShardClaims(
 func (r *EgressShardBindingReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&bgpv1alpha1.EgressShard{}).
-		Watches(&cloudv1alpha1.EgressShardClaim{},
+		Watches(&bgpv1alpha1.EgressShardClaim{},
 			handler.EnqueueRequestsFromMapFunc(egressShardForClaim)).
 		Named("egressshardbinding").
 		Complete(r)
@@ -160,7 +164,7 @@ func (r *EgressShardBindingReconciler) SetupWithManager(mgr ctrl.Manager) error 
 // A claim holding no binding maps to nothing, and needs to: it was never part
 // of any shard's consumer set, which is counted from this same field.
 func egressShardForClaim(_ context.Context, object client.Object) []reconcile.Request {
-	claim, ok := object.(*cloudv1alpha1.EgressShardClaim)
+	claim, ok := object.(*bgpv1alpha1.EgressShardClaim)
 	if !ok || claim.Status.ShardRef == nil {
 		return nil
 	}
