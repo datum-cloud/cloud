@@ -40,6 +40,7 @@ import (
 	cloudv1alpha1 "go.datum.net/cloud/api/v1alpha1"
 	"go.datum.net/cloud/internal/controller"
 	"go.datum.net/cloud/internal/ipam"
+	"go.datum.net/cloud/internal/leaderelection"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 )
 
@@ -112,12 +113,15 @@ func main() {
 	// leadership only as available as that plane: a hub hiccup would churn
 	// leadership and restart the controller. An unreachable hub has to cost
 	// this component its work. It does not have to cost it its identity.
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:                 scheme,
-		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
-		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "fabric-identity-controller.cloud.datumapis.com",
+	restConfig := ctrl.GetConfigOrDie()
+	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
+		Scheme:                        scheme,
+		Metrics:                       metricsserver.Options{BindAddress: metricsAddr},
+		HealthProbeBindAddress:        probeAddr,
+		LeaderElection:                enableLeaderElection,
+		LeaderElectionID:              "fabric-identity-controller.cloud.datumapis.com",
+		LeaderElectionConfig:          leaderelection.RestConfig(restConfig),
+		LeaderElectionReleaseOnCancel: true,
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
