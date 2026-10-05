@@ -98,6 +98,28 @@ type BGPPlugin struct {
 	VPC           string `json:"vpc"`
 	VPCAttachment string `json:"vpcattachment"`
 	Namespace     string `json:"namespace"`
+	// Egress is what this attachment reaches outside the platform. It is omitted
+	// whenever egress is not enabled, which is what keeps every conflist rendered
+	// until now byte-identical, the same property DAN was given. A node that
+	// receives no block installs no route, so a network reaches nothing outside
+	// the platform until a consumer asks for it.
+	Egress *Egress `json:"egress,omitempty"`
+}
+
+// Egress is the outbound declaration this attachment carries to its node. It
+// names no shard: translation runs on the node the instance attaches to, so
+// the node routes toward its own shard and reads only whether to.
+type Egress struct {
+	Internet *InternetEgress `json:"internet,omitempty"`
+}
+
+// InternetEgressEnabled is the one mode a node acts on. Anything else, and an
+// absent block, installs no route.
+const InternetEgressEnabled = "Enabled"
+
+// InternetEgress is whether this attachment reaches the internet.
+type InternetEgress struct {
+	Mode string `json:"mode"`
 }
 
 // IPAM is the delegated IPAM block. Presence alone decides whether IPAM runs.
@@ -118,8 +140,10 @@ type Address struct {
 // Conflist renders the conflist for one attachment. Addresses are the addresses
 // NSO already allocated; an empty list means the guest addresses itself and no
 // IPAM block is emitted. Set dan for a guest whose hypervisor is handed the
-// device rather than discovering it.
-func Conflist(name, plugin, vpc, vpcAttachment string, mtu int32, addresses []Address, dan bool) NetConfList {
+// device rather than discovering it. A nil egress renders no egress block, so
+// the attachment reaches nothing outside the platform.
+func Conflist(name, plugin, vpc, vpcAttachment string, mtu int32, addresses []Address, dan bool,
+	egress *Egress) NetConfList {
 	master := MasterPlugin{
 		Type:          plugin,
 		VPC:           vpc,
@@ -131,19 +155,32 @@ func Conflist(name, plugin, vpc, vpcAttachment string, mtu int32, addresses []Ad
 	if len(addresses) > 0 {
 		master.IPAM = &IPAM{Type: PluginIPAM, Addresses: addresses}
 	}
+	// A block that does not declare Enabled is one a node can do nothing with,
+	// and it is not the same instruction as no block: absence is what tells the
+	// node to install no route.
+	if egress != nil && (egress.Internet == nil || egress.Internet.Mode != InternetEgressEnabled) {
+		egress = nil
+	}
 	return NetConfList{
 		CNIVersion: CNIVersion,
 		Name:       name,
 		Plugins: []any{
 			master,
-			BGPPlugin{Type: PluginBGP, VPC: vpc, VPCAttachment: vpcAttachment, Namespace: SystemNamespace},
+			BGPPlugin{
+				Type:          PluginBGP,
+				VPC:           vpc,
+				VPCAttachment: vpcAttachment,
+				Namespace:     SystemNamespace,
+				Egress:        egress,
+			},
 		},
 	}
 }
 
 // ConflistJSON renders the conflist as the string a NAD's spec.config holds.
-func ConflistJSON(name, plugin, vpc, vpcAttachment string, mtu int32, addresses []Address, dan bool) (string, error) {
-	raw, err := json.Marshal(Conflist(name, plugin, vpc, vpcAttachment, mtu, addresses, dan))
+func ConflistJSON(name, plugin, vpc, vpcAttachment string, mtu int32, addresses []Address, dan bool,
+	egress *Egress) (string, error) {
+	raw, err := json.Marshal(Conflist(name, plugin, vpc, vpcAttachment, mtu, addresses, dan, egress))
 	if err != nil {
 		return "", fmt.Errorf("marshal CNI conflist: %w", err)
 	}

@@ -27,7 +27,7 @@ func TestConflistChainIsComplete(t *testing.T) {
 		[]Address{
 			{Address: "fd00:10:ff01:0:1::1/96", Gateway: "fd00:10:ff01::1"},
 			{Address: "172.20.1.7/32", Gateway: "172.20.1.1"},
-		}, false)
+		}, false, nil)
 
 	if conflist.CNIVersion != "1.0.0" {
 		t.Errorf("cniVersion: got %q, want %q", conflist.CNIVersion, "1.0.0")
@@ -64,7 +64,7 @@ func TestConflistChainIsComplete(t *testing.T) {
 }
 
 func TestConflistOmitsIPAMForSelfAddressingGuest(t *testing.T) {
-	raw, err := ConflistJSON("web-eth0", PluginTap, "0000000jU", "01a", 0, nil, false)
+	raw, err := ConflistJSON("web-eth0", PluginTap, "0000000jU", "01a", 0, nil, false, nil)
 	if err != nil {
 		t.Fatalf("ConflistJSON: %v", err)
 	}
@@ -131,11 +131,11 @@ func TestSplitAdvertisementName(t *testing.T) {
 // to the hypervisor. Every attachment rendered until now leaves it out, so its
 // absence has to stay the default.
 func TestConflistCarriesTheDeclaredDeviceRequest(t *testing.T) {
-	declared, err := ConflistJSON("vm-eth0", PluginTap, "0000000jU", "01a", 1400, nil, true)
+	declared, err := ConflistJSON("vm-eth0", PluginTap, "0000000jU", "01a", 1400, nil, true, nil)
 	if err != nil {
 		t.Fatalf("ConflistJSON: %v", err)
 	}
-	discovered, err := ConflistJSON("vm-eth0", PluginTap, "0000000jU", "01a", 1400, nil, false)
+	discovered, err := ConflistJSON("vm-eth0", PluginTap, "0000000jU", "01a", 1400, nil, false, nil)
 	if err != nil {
 		t.Fatalf("ConflistJSON: %v", err)
 	}
@@ -157,4 +157,101 @@ func masterStanza(t *testing.T, raw string) map[string]any {
 		t.Fatalf("unmarshal conflist: %v", err)
 	}
 	return decoded.Plugins[0]
+}
+
+// The egress block is the only new field in the conflist, and a node that
+// receives none installs no egress route. Every conflist rendered before it
+// existed has to stay byte-identical, so these are the exact strings the
+// renderer produced at the commit that introduced the field.
+func TestConflistWithoutEgressIsByteIdentical(t *testing.T) {
+	tests := []struct {
+		name string
+		got  func() (string, error)
+		want string
+	}{
+		{
+			name: "addressed container",
+			got: func() (string, error) {
+				return ConflistJSON("web-eth0", PluginVeth, "0000000jU", "01a", 1400,
+					[]Address{{Address: "fd00:10:ff01:0:1::1/96", Gateway: "fd00:10:ff01::1"}}, false, nil)
+			},
+			want: `{"cniVersion":"1.0.0","name":"web-eth0","plugins":[{"type":"galactic-veth","vpc":"0000000jU","vpcattachment":"01a","namespace":"galactic-system","mtu":1400,"ipam":{"type":"galactic-ipam","addresses":[{"address":"fd00:10:ff01:0:1::1/96","gateway":"fd00:10:ff01::1"}]}},{"type":"galactic-bgp","vpc":"0000000jU","vpcattachment":"01a","namespace":"galactic-system"}]}`,
+		},
+		{
+			name: "declared guest",
+			got: func() (string, error) {
+				return ConflistJSON("web-eth0", PluginVeth, "0000000jU", "01a", 1400,
+					[]Address{{Address: "fd00:10:ff01:0:1::1/96", Gateway: "fd00:10:ff01::1"}}, true, nil)
+			},
+			want: `{"cniVersion":"1.0.0","name":"web-eth0","plugins":[{"type":"galactic-veth","vpc":"0000000jU","vpcattachment":"01a","namespace":"galactic-system","mtu":1400,"dan":true,"ipam":{"type":"galactic-ipam","addresses":[{"address":"fd00:10:ff01:0:1::1/96","gateway":"fd00:10:ff01::1"}]}},{"type":"galactic-bgp","vpc":"0000000jU","vpcattachment":"01a","namespace":"galactic-system"}]}`,
+		},
+		{
+			name: "self addressing guest",
+			got: func() (string, error) {
+				return ConflistJSON("vm-eth0", PluginTap, "0000000jU", "01a", 0, nil, false, nil)
+			},
+			want: `{"cniVersion":"1.0.0","name":"vm-eth0","plugins":[{"type":"galactic-tap","vpc":"0000000jU","vpcattachment":"01a","namespace":"galactic-system"},{"type":"galactic-bgp","vpc":"0000000jU","vpcattachment":"01a","namespace":"galactic-system"}]}`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := test.got()
+			if err != nil {
+				t.Fatalf("ConflistJSON: %v", err)
+			}
+			if got != test.want {
+				t.Errorf("conflist changed:\n got %s\nwant %s", got, test.want)
+			}
+		})
+	}
+}
+
+// The egress block is the whole contract with the node: it hangs off the
+// galactic-bgp stanza, under one key, and carries the declaration alone. The
+// node routes toward its own shard, so no shard identity travels here.
+func TestConflistCarriesTheEgressDeclaration(t *testing.T) {
+	const want = `{"cniVersion":"1.0.0","name":"vm-eth0","plugins":[` +
+		`{"type":"galactic-tap","vpc":"0000000jU","vpcattachment":"01a","namespace":"galactic-system"},` +
+		`{"type":"galactic-bgp","vpc":"0000000jU","vpcattachment":"01a","namespace":"galactic-system",` +
+		`"egress":{"internet":{"mode":"Enabled"}}}]}`
+
+	got, err := ConflistJSON("vm-eth0", PluginTap, "0000000jU", "01a", 0, nil, false,
+		&Egress{Internet: &InternetEgress{Mode: InternetEgressEnabled}})
+	if err != nil {
+		t.Fatalf("ConflistJSON: %v", err)
+	}
+	if got != want {
+		t.Errorf("conflist:\n got %s\nwant %s", got, want)
+	}
+}
+
+// A block that declares anything but Enabled is one a node can do nothing
+// with, so it renders as no block at all rather than as an empty one.
+func TestConflistOmitsAnEgressBlockThatDeclaresNothing(t *testing.T) {
+	for name, egress := range map[string]*Egress{
+		"empty":    {},
+		"no mode":  {Internet: &InternetEgress{}},
+		"disabled": {Internet: &InternetEgress{Mode: "Disabled"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			raw, err := ConflistJSON("vm-eth0", PluginTap, "0000000jU", "01a", 0, nil, false, egress)
+			if err != nil {
+				t.Fatalf("ConflistJSON: %v", err)
+			}
+			if _, present := bgpStanza(t, raw)["egress"]; present {
+				t.Errorf("egress block present with nothing enabled: %s", raw)
+			}
+		})
+	}
+}
+
+func bgpStanza(t *testing.T, raw string) map[string]any {
+	t.Helper()
+	var decoded struct {
+		Plugins []map[string]any `json:"plugins"`
+	}
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		t.Fatalf("unmarshal conflist: %v", err)
+	}
+	return decoded.Plugins[1]
 }

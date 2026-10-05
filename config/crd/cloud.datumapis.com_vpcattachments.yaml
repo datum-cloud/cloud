@@ -164,6 +164,69 @@ spec:
                 maxLength: 46
                 minLength: 46
                 type: string
+              egress:
+                description: |-
+                  Egress reports what this attachment reaches outside the platform.
+
+                  It is reported per attachment rather than on the network, because the
+                  interface is what a workload holds and what a consumer reads back
+                  through. This controller is the only component that resolved which shard
+                  the network bound to, so it is the only one that can report the answer.
+                properties:
+                  internet:
+                    description: Internet is the internet egress realized for this
+                      attachment.
+                    properties:
+                      sourceAddresses:
+                        description: |-
+                          SourceAddresses are the addresses translation writes for this
+                          attachment, one per family reached.
+
+                          Absent means this attachment reaches nothing outside the platform, or
+                          that no address has been reported for a path that does. An absent list
+                          is never a placeholder: a consumer that allow-listed a guessed address
+                          would admit the wrong traffic and believe otherwise.
+                        items:
+                          description: InternetEgressSourceAddress is one address
+                            outbound traffic leaves on.
+                          properties:
+                            address:
+                              description: |-
+                                Address is the source address translation writes, without a prefix
+                                length.
+                              maxLength: 39
+                              minLength: 1
+                              type: string
+                            family:
+                              description: Family is the address family of this source
+                                address.
+                              enum:
+                              - IPv6
+                              type: string
+                            stability:
+                              description: |-
+                                Stability states how far a consumer may rely on this address before
+                                they act on it.
+                              enum:
+                              - None
+                              - Network
+                              type: string
+                          required:
+                          - address
+                          - family
+                          - stability
+                          type: object
+                          x-kubernetes-validations:
+                          - message: an IPv6 source address must be a valid IPv6 address
+                            rule: self.family != 'IPv6' || (isIP(self.address) &&
+                              ip(self.address).family() == 6)
+                        maxItems: 2
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - family
+                        x-kubernetes-list-type: map
+                    type: object
+                type: object
               guestInterface:
                 description: Guest-side veth device name (e.g., "G000000010013G").
                 minLength: 1
