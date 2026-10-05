@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: egress-address-metrics
+  namespace: system
+  labels:
+    app.kubernetes.io/name: egress-address-controller
+    app.kubernetes.io/component: egress-address-controller
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  ports:
+    - name: metrics
+      port: 8080
+      protocol: TCP
+      targetPort: metrics
+  selector:
+    app.kubernetes.io/name: egress-address-controller
