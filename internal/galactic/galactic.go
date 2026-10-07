@@ -25,6 +25,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"go.datum.net/cloud/internal/identifier"
 )
 
 const (
@@ -166,17 +168,33 @@ func VRFInterfaceName(vpc string) string {
 	return fmt.Sprintf("G%09sV", vpc)
 }
 
-// AdvertisementName returns the BGPAdvertisement name galactic derives from an
-// attachment.
+// AdvertisementName returns the hex-encoded identity prefix shared by every
+// node-qualified BGPAdvertisement galactic derives from an attachment.
 func AdvertisementName(vpc, vpcAttachment string) string {
-	return fmt.Sprintf("%s-%s", vpc, vpcAttachment)
+	vpcHex, err := identifier.Base62ToHex(vpc)
+	if err != nil {
+		return ""
+	}
+	attachmentHex, err := identifier.Base62ToHex(vpcAttachment)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%s-%s", vpcHex, attachmentHex)
 }
 
-// SplitAdvertisementName recovers the (vpc, attachment) pair from an
-// advertisement name.
+// SplitAdvertisementName recovers the base62 (vpc, attachment) pair from a
+// current node-qualified advertisement name.
 func SplitAdvertisementName(name string) (vpc, vpcAttachment string, ok bool) {
-	vpc, vpcAttachment, ok = strings.Cut(name, "-")
-	if !ok || vpc == "" || vpcAttachment == "" {
+	parts := strings.SplitN(name, "-", 3)
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return "", "", false
+	}
+	vpc, err := identifier.HexToBase62(parts[0])
+	if err != nil || vpc == "" {
+		return "", "", false
+	}
+	vpcAttachment, err = identifier.HexToBase62(parts[1])
+	if err != nil || vpcAttachment == "" {
 		return "", "", false
 	}
 	return vpc, vpcAttachment, true
