@@ -109,7 +109,11 @@ func main() {
 			if !ok || attachment.Status.VPC == "" || attachment.Status.VPCAttachment == "" {
 				return nil
 			}
-			return []string{galactic.AdvertisementName(attachment.Status.VPC, attachment.Status.VPCAttachment)}
+			identity := galactic.AdvertisementName(attachment.Status.VPC, attachment.Status.VPCAttachment)
+			if identity == "" {
+				return nil
+			}
+			return []string{identity}
 		}); err != nil {
 		setupLog.Error(err, "unable to index VPC attachments by identity")
 		os.Exit(1)

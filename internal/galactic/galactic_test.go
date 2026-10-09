@@ -112,9 +112,11 @@ func TestSplitAdvertisementName(t *testing.T) {
 		vpcAttachment string
 		ok            bool
 	}{
-		{"0000000jU-01a", "0000000jU", "01a", true},
-		{"0000000jU", "", "", false},
-		{"-01a", "", "", false},
+		{"e008-d54-compute-c21d3c-us-east-1-staging-lab", "eV2", "T2", true},
+		{"e007-d53-edge-567e29-us-east-1", "eV1", "T1", true},
+		{"e008-d54", "", "", false},
+		{"-d54-worker", "", "", false},
+		{"e008--worker", "", "", false},
 	}
 	for _, test := range tests {
 		t.Run(test.input, func(t *testing.T) {
@@ -124,6 +126,15 @@ func TestSplitAdvertisementName(t *testing.T) {
 					vpc, vpcAttachment, ok, test.vpc, test.vpcAttachment, test.ok)
 			}
 		})
+	}
+}
+
+func TestAdvertisementNameEncodesBase62IdentityAsHex(t *testing.T) {
+	if got, want := AdvertisementName("eV2", "T2"), "e008-d54"; got != want {
+		t.Errorf("AdvertisementName() = %q, want %q", got, want)
+	}
+	if got := AdvertisementName("not-valid!", "T2"); got != "" {
+		t.Errorf("AdvertisementName() with invalid VPC = %q, want empty", got)
 	}
 }
 
