@@ -92,6 +92,7 @@ rules:
   resources:
   - networkinterfaceclaims/status
   - networkinterfaces/status
+  - subnets/status
   verbs:
   - get
   - patch
