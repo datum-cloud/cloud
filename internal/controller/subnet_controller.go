@@ -169,7 +169,7 @@ func (r *SubnetReconciler) subnetsForVPC(ctx context.Context, obj client.Object)
 	if err := r.List(ctx, &subnets, client.InNamespace(vpc.Namespace)); err != nil {
 		return nil
 	}
-	var requests []ctrl.Request
+	requests := make([]ctrl.Request, 0, len(subnets.Items))
 	for i := range subnets.Items {
 		if subnets.Items[i].Spec.NetworkContext.Name != vpc.Name {
 			continue
