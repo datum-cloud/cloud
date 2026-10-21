@@ -27,7 +27,6 @@ import (
 	"flag"
 	"os"
 
-	_ "golang.org/x/crypto/x509roots/fallback"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
